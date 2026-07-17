@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>ÍGNEA — tap-to-predict</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23ff6a2b'/%3E%3Cpath d='M16 6c3 4-1 5 1 9 1 2 3 2 3 5a4 4 0 1 1-8 0c0-2 1-3 2-4-2 0-3-2-3-4 0-4 2-7 3-11z' fill='%23fff'/%3E%3C/svg%3E" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#0d0f13" />
+  <link href="vendor/maplibre-gl.css" rel="stylesheet" />
+  <script src="vendor/maplibre-gl.js"></script>
+  <script src="vendor/pmtiles.js"></script>
+  <script src="engine-offline.js"></script>
+  <style>
+    :root {
+      --bg: #0d0f13; --panel: rgba(18, 21, 27, 0.92); --panel-line: #2a2f3a;
+      --ink: #f3f5f8; --ink-dim: #9aa3b2; --ember: #ff6a2b; --ember-soft: #ffb374;
+      --good: #57c977; --warn: #ffc857; --bad: #e8503a;
+      --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+    #map { position: absolute; inset: 0; }
+    .maplibregl-ctrl-attrib { font-size: 10px; }
+
+    /* ── Header (brand only — no interactive children) ──────────────────── */
+    header {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+      display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+      background: linear-gradient(180deg, rgba(13,15,19,0.85), rgba(13,15,19,0));
+      pointer-events: none;
+    }
+    .brand { font-weight: 700; letter-spacing: 0.28em; font-size: 15px; }
+    .brand .spark { color: var(--ember); }
+    .tagline { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.02em; }
+
+    /* ── Language toggle — standalone, top-right, above MapLibre nav ─────── */
+    #langToggle {
+      position: absolute; top: 10px; right: 52px; z-index: 10;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 3px; backdrop-filter: blur(8px); display: flex;
+    }
+    #langToggle span {
+      font-size: 11px; padding: 5px 11px; border-radius: 999px; cursor: pointer;
+      color: var(--ink-dim); transition: background .2s, color .2s; user-select: none;
+      font-weight: 700; letter-spacing: .08em;
+    }
+    #langToggle span.on { background: var(--ember); color: #1a0f08; }
+
+    /* ── Health warning banner ────────────────────────────────────────────── */
+    #healthWarn {
+      position: absolute; top: 54px; left: 50%; transform: translateX(-50%); z-index: 8;
+      background: rgba(232,80,58,.15); border: 1px solid rgba(232,80,58,.4); border-radius: 999px;
+      padding: 6px 16px; font-size: 11.5px; color: #ff8a5a;
+      backdrop-filter: blur(8px); display: none; white-space: nowrap;
+    }
+
+    /* ── Hint pill ─────────────────────────────────────────────────────────── */
+    .hint {
+      position: absolute; top: 54px; left: 50%; transform: translateX(-50%); z-index: 5;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 7px 16px; font-size: 12.5px; color: var(--ink-dim);
+      backdrop-filter: blur(8px); transition: opacity .4s;
+    }
+    .hint b { color: var(--ember-soft); font-weight: 600; }
+
+    /* ── Result panel ─────────────────────────────────────────────────────── */
+    #panel {
+      position: absolute; z-index: 6; bottom: 0; left: 0; right: 0;
+      background: var(--panel); border-top: 1px solid var(--panel-line);
+      backdrop-filter: blur(12px); padding: 16px 18px 20px;
+      transform: translateY(110%); transition: transform .35s cubic-bezier(.2,.7,.2,1);
+      max-height: 62vh; overflow-y: auto;
+    }
+    #panel.open { transform: translateY(0); }
+    @media (min-width: 720px) {
+      #panel { left: auto; right: 16px; bottom: 16px; width: 360px; border: 1px solid var(--panel-line);
+               border-radius: 16px; transform: translateY(0) translateX(130%); }
+      #panel.open { transform: translateX(0); }
+    }
+    .panel-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+    .panel-head h2 { font-size: 13px; font-weight: 600; letter-spacing: .02em; flex: 1; }
+    .mode { font-size: 10.5px; text-transform: uppercase; letter-spacing: .14em; color: var(--ember); }
+    .panel-close {
+      background: none; border: none; color: var(--ink-dim); cursor: pointer;
+      font-size: 18px; line-height: 1; padding: 0 0 0 4px; opacity: .6;
+      transition: opacity .2s; flex-shrink: 0;
+    }
+    .panel-close:hover { opacity: 1; }
+    .coords { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); margin-bottom: 14px; }
+    .nospread { font-size: 12px; line-height: 1.5; color: #ffcf9e; background: rgba(255,181,71,.12);
+                border: 1px solid rgba(255,181,71,.35); border-radius: 10px; padding: 9px 11px; margin-bottom: 14px; }
+    .exposure { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+    .exposure .xstat { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+    .exposure .xn { font-family: var(--mono); font-weight: 700; color: var(--ember-soft); min-width: 42px; }
+    .exposure .xnames { font-size: 11.5px; color: var(--ink-dim); line-height: 1.4; }
+    .exposure .crit { color: #ff8a5a; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+    .stat { background: rgba(255,255,255,.03); border: 1px solid var(--panel-line);
+            border-radius: 10px; padding: 9px 10px; }
+    .stat .k { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-dim); }
+    .stat .v { font-family: var(--mono); font-size: 16px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .stat .u { font-size: 10.5px; color: var(--ink-dim); margin-left: 2px; }
+
+    .band { margin-bottom: 12px; }
+    .band .label { font-size: 11px; color: var(--ink-dim); margin-bottom: 6px; display: flex; justify-content: space-between; }
+    .band .track { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
+                   font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .band .bar { flex: 1; height: 6px; border-radius: 3px;
+                 background: linear-gradient(90deg, var(--ember-soft), var(--ember), var(--bad)); opacity: .85; }
+
+    .confidence { display: flex; align-items: center; gap: 10px; margin-top: 4px;
+                  padding-top: 12px; border-top: 1px solid var(--panel-line); }
+    .conf-meter { flex: 1; height: 8px; border-radius: 4px; background: rgba(255,255,255,.07); overflow: hidden; }
+    .conf-fill { height: 100%; border-radius: 4px; }
+    .conf-label { font-size: 11px; color: var(--ink-dim); }
+    .conf-label b { color: var(--ink); font-family: var(--mono); }
+    .fuelinfo { display: flex; align-items: center; gap: 7px; margin-top: 9px; font-size: 11px; color: var(--ink-dim); }
+    .fuelinfo .src { font-family: var(--mono); }
+    .fuelinfo .badge { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px;
+                       border-radius: 999px; background: rgba(255,255,255,.06); color: var(--ember-soft); }
+    .disclaimer { font-size: 10.5px; color: var(--ink-dim); margin-top: 10px; line-height: 1.5; }
+
+    /* ── Loading overlay ─────────────────────────────────────────────────── */
+    #loading {
+      position: absolute; inset: 0; z-index: 7; display: none; place-items: center;
+      background: rgba(8,9,12,.42); backdrop-filter: blur(2px);
+    }
+    #loading.on { display: grid; }
+    .loader { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .ring { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255,106,43,.2);
+            border-top-color: var(--ember); animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .ring { animation-duration: 2.4s; } }
+    .loader .msg  { font-size: 12.5px; color: var(--ink-dim); text-align: center; }
+    .loader .hint { font-size: 11px; color: #ff8a5a; text-align: center; max-width: 280px; line-height: 1.5; display: none; }
+    .loader .hint.show { display: block; }
+
+    /* ── Legends ─────────────────────────────────────────────────────────── */
+    .legend {
+      position: absolute; left: 16px; bottom: 16px; z-index: 5; background: var(--panel);
+      border: 1px solid var(--panel-line); border-radius: 12px; padding: 11px 13px;
+      font-size: 11px; color: var(--ink-dim); backdrop-filter: blur(8px);
+      opacity: 0; transition: opacity .4s; pointer-events: none;
+    }
+    .legend.show { opacity: 1; }
+    .legend .grad { height: 8px; width: 150px; border-radius: 4px; margin: 6px 0 4px;
+                    background: linear-gradient(90deg, #fff5a0, #ffd64a, #ff8d29, #e83f1a, #980c0c); }
+    .legend .ends { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; }
+    #sectorLegend .slegend { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+    #sectorLegend .slegend span { display: inline-flex; align-items: center; gap: 4px; }
+    #sectorLegend .slegend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+
+    /* ── Layer toggle (center-top) ───────────────────────────────────────── */
+    #layerToggle {
+      position: absolute; top: 54px; left: 50%; transform: translateX(-50%); z-index: 6;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 3px; backdrop-filter: blur(8px);
+    }
+    #layerToggle span {
+      font-size: 12px; padding: 5px 14px; border-radius: 999px; cursor: pointer; color: var(--ink-dim);
+      transition: background .2s, color .2s; user-select: none;
+    }
+    #layerToggle span.on { background: var(--ember); color: #1a0f08; font-weight: 600; }
+
+    /* ── Sector list in panel ─────────────────────────────────────────────── */
+    .sector-head .eyebrow { font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-dim); }
+    .sector-head { display: flex; align-items: baseline; justify-content: space-between; margin: 4px 0 8px; }
+    .head-bearing { font-family: var(--mono); font-size: 11.5px; color: var(--ember-soft); }
+    .sector-list { list-style: none; display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+    .sector-list li { display: flex; gap: 9px; align-items: flex-start; }
+    .sector-list .swatch { width: 12px; height: 12px; border-radius: 3px; margin-top: 3px; flex: none; }
+    .sector-list .smeta { font-size: 10.5px; color: var(--ink-dim); font-family: var(--mono); margin-top: 2px; }
+    .tag.crit { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px;
+                border-radius: 999px; background: rgba(232,80,58,.18); color: #ff8a5a; margin-left: 4px; }
+
+    /* ── Engine toggle (left-top) ─────────────────────────────────────────── */
+    #engineToggle {
+      position: absolute; top: 54px; left: 16px; z-index: 6;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 3px; backdrop-filter: blur(8px);
+    }
+    #engineToggle span {
+      font-size: 12px; padding: 5px 13px; border-radius: 999px; cursor: pointer; color: var(--ink-dim);
+      transition: background .2s, color .2s; user-select: none;
+    }
+    #engineToggle span.on { background: var(--ember); color: #1a0f08; font-weight: 600; }
+
+    #scenarioToggle {
+      position: absolute; top: 92px; left: 16px; z-index: 6;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 3px; backdrop-filter: blur(8px); display: flex; align-items: center; gap: 2px;
+    }
+    #scenarioToggle .stitle { font-size: 10px; color: var(--ink-dim); padding: 0 6px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+    #scenarioToggle span.sc {
+      font-size: 12px; padding: 5px 11px; border-radius: 999px; cursor: pointer; color: var(--ink-dim);
+      transition: background .2s, color .2s; user-select: none;
+    }
+    #scenarioToggle span.sc.on { background: var(--ember); color: #1a0f08; font-weight: 600; }
+
+    /* ── Command toggle ───────────────────────────────────────────────────── */
+    #cmdToggle {
+      /* Second row below the scenario selector — they previously shared top≈92px/left:16px and the
+         command pill covered the scenario's "Actual" chip (and, expanded, "Viento fuerte" too). */
+      position: absolute; top: 140px; left: 16px; z-index: 6; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 7px;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 7px 13px; font-size: 12px; color: var(--ink-dim);
+      font-family: var(--sans); backdrop-filter: blur(8px); transition: color .2s, border-color .2s;
+    }
+    #cmdToggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-dim); transition: background .2s; }
+    #cmdToggle.on { color: var(--ink); border-color: var(--ember); }
+    #cmdToggle.on .dot { background: var(--ember); box-shadow: 0 0 8px var(--ember); }
+
+    /* ── Offline tiles button ─────────────────────────────────────────────── */
+    #tilesBtn {
+      /* Third row: scenario selector (92px) → command pill (140px) → offline-tiles button. */
+      position: absolute; top: 184px; left: 16px; z-index: 6; cursor: pointer;
+      display: none; align-items: center; gap: 7px;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 6px 12px; font-size: 11.5px; color: var(--ink-dim);
+      font-family: var(--sans); backdrop-filter: blur(8px);
+    }
+    #tilesBtn.show { display: inline-flex; }
+    #tilesBtn.ready { border-color: var(--good); color: var(--good); }
+    #tilesBtn.progress { border-color: var(--warn); color: var(--warn); }
+    #tilesBtn.err { border-color: var(--bad); color: var(--bad); }
+
+    /* ── Resource markers ─────────────────────────────────────────────────── */
+    .res-marker {
+      width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+      font-family: var(--mono); font-size: 11px; font-weight: 600; color: #0d0f13;
+      border: 2px solid #fff; box-shadow: 0 1px 6px rgba(0,0,0,.5); cursor: pointer;
+    }
+    .res-marker.safe   { background: var(--good); }
+    .res-marker.watch  { background: var(--warn); }
+    .res-marker.danger { background: var(--bad); color: #fff; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { box-shadow: 0 1px 6px rgba(0,0,0,.5); } 50% { box-shadow: 0 0 14px rgba(232,80,58,.95); } }
+    @media (prefers-reduced-motion: reduce) { .res-marker.danger { animation: none; } }
+    .alert-pill { font-family: var(--mono); font-size: 11.5px; }
+    .alert-pill.safe { color: var(--good); }
+    .alert-pill.watch { color: var(--warn); }
+    .alert-pill.danger { color: var(--bad); }
+    /* ── Live GPS feed bar ───────────────────────────────────────────────────── */
+    .live-bar { display:flex; align-items:center; gap:8px; margin:0 0 8px;
+      padding:6px 8px; border-radius:8px; background:var(--panel-2); border:1px solid var(--line); }
+    .live-dot { width:7px; height:7px; border-radius:50%; background:var(--faint); flex-shrink:0; transition:background .3s; }
+    .live-dot.on { background:var(--good); box-shadow:0 0 0 3px rgba(63,178,127,.2); }
+    #liveStatus { flex:1; font-size:11.5px; color:var(--muted); }
+    #liveBtn { font-size:11px; padding:3px 10px; border-radius:99px; border:1px solid var(--line);
+      background:transparent; color:var(--muted); cursor:pointer; line-height:1.5; font-family:var(--sans); }
+    #liveBtn.on { border-color:var(--good); color:var(--good); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Brand header — pointer-events: none; no interactive children here -->
+  <header>
+    <span class="brand">Í<span class="spark">G</span>NEA</span>
+    <span class="tagline" data-i18n="tagline">toca un punto · ve adónde va el fuego</span>
+  </header>
+
+  <!-- Language toggle — standalone absolute so pointer-events work cleanly -->
+  <div id="langToggle" role="group" aria-label="Language">
+    <span data-lang="es" class="on" onclick="setLang('es')" role="button" tabindex="0">ES</span>
+    <span data-lang="en" onclick="setLang('en')" role="button" tabindex="0">EN</span>
+  </div>
+
+  <!-- Config health warning (shown if ELMFIRE not found) -->
+  <div id="healthWarn"></div>
+
+  <!-- Ignition hint -->
+  <div class="hint" id="hint">
+    <b data-i18n="hintBold">Toca el mapa</b> <span data-i18n="hintRest">para fijar un punto de ignición</span>
+  </div>
+
+  <!-- Loading spinner -->
+  <div id="loading"><div class="loader">
+    <div class="ring"></div>
+    <div class="msg"  id="loadmsg">Ingiriendo terreno · combustible · meteorología…</div>
+    <div class="hint" id="loadhint"></div>
+  </div></div>
+
+  <!-- Burn-probability legend -->
+  <div class="legend" id="legend">
+    <span data-i18n="legendBurn">Probabilidad de quema</span>
+    <div class="grad"></div>
+    <div class="ends"><span data-i18n="legendLow">baja</span><span data-i18n="legendCertain">segura</span></div>
+  </div>
+
+  <!-- Sector legend -->
+  <div class="legend" id="sectorLegend">
+    <span data-i18n="legendSectors">Sectores</span>
+    <div class="slegend">
+      <span><i style="background:#ff5a2b"></i><span data-i18n="legendHead">cabeza</span></span>
+      <span><i style="background:#ffb547"></i><span data-i18n="legendFlanks">flancos</span></span>
+      <span><i style="background:#3fb27f"></i><span data-i18n="legendRear">cola</span></span>
+    </div>
+  </div>
+
+  <!-- Layer toggle (probability / sectors) -->
+  <div id="layerToggle" style="display:none">
+    <span data-layer="burn"    class="on" data-i18n="layerBurn"    onclick="showLayer('burn')">Probabilidad</span>
+    <span data-layer="sectors"            data-i18n="layerSectors"  onclick="showLayer('sectors')">Sectores</span>
+  </div>
+
+  <!-- Engine toggle (online / offline) -->
+  <div id="engineToggle">
+    <span data-engine="online"  class="on" onclick="setEngine('online')">Online</span>
+    <span data-engine="offline"            onclick="setEngine('offline')">Offline</span>
+  </div>
+
+  <!-- Scenario toggle — a pre-deployment "what-if": explore adverse conditions, not just now -->
+  <div id="scenarioToggle" role="group" aria-label="Scenario">
+    <span class="stitle" data-i18n="scenarioLabel">Escenario</span>
+    <span class="sc on" data-scenario="real"     onclick="setScenario('real')"    data-i18n="scenarioReal">Actual</span>
+    <span class="sc"    data-scenario="strong"   onclick="setScenario('strong')"  data-i18n="scenarioStrong">Viento fuerte</span>
+    <span class="sc"    data-scenario="extreme"  onclick="setScenario('extreme')" data-i18n="scenarioExtreme">Extremo</span>
+  </div>
+
+  <!-- Offline map tile download button -->
+  <button id="tilesBtn" onclick="handleTilesBtn()"></button>
+
+  <!-- Command-mode toggle -->
+  <button id="cmdToggle" style="display:none" onclick="toggleCommand()">
+    <span class="dot"></span><span id="cmdLabel" data-i18n="cmdLabel">Modo mando</span>
+  </button>
+
+  <!-- Result panel -->
+  <div id="panel">
+    <div class="panel-head">
+      <h2 data-i18n="panelTitle">Predicción de propagación</h2>
+      <span class="mode" id="mode">probabilístico</span>
+      <button class="panel-close" onclick="closePanel()" aria-label="close">×</button>
+    </div>
+    <div class="coords" id="coords">—</div>
+    <div id="noSpread" class="nospread" style="display:none"></div>
+
+    <div class="row">
+      <div class="stat"><div class="k" data-i18n="statMaxP">P(quema) máx.</div><div class="v" id="maxp">—</div></div>
+      <div class="stat"><div class="k" data-i18n="statWind">Viento</div><div class="v" id="wind">—<span class="u">m/s</span></div></div>
+      <div class="stat"><div class="k" data-i18n="statMembers">Miembros</div><div class="v" id="members">—</div></div>
+    </div>
+
+    <div class="band">
+      <div class="label"><span data-i18n="arrivalLabel">Tiempo de llegada (p10 · p50 · p90)</span></div>
+      <div class="track"><span id="arr10">—</span><div class="bar"></div><span id="arr90">—</span></div>
+    </div>
+    <div class="band">
+      <div class="label">
+        <span data-i18n="fireSizeLabel">Tamaño del fuego (p10 · p50 · p90)</span>
+        <span id="firesize50">—</span>
+      </div>
+      <div class="track"><span id="fs10">—</span><div class="bar"></div><span id="fs90">—</span></div>
+    </div>
+
+    <div id="sectorBlock" style="display:none">
+      <div class="sector-head">
+        <span class="eyebrow" data-i18n="sectorEyebrow">Sectores de comportamiento</span>
+        <span class="head-bearing" id="headBearing">—</span>
+      </div>
+      <ul id="sectorList" class="sector-list"></ul>
+    </div>
+
+    <div id="exposureBlock" style="display:none">
+      <div class="sector-head">
+        <span class="eyebrow" data-i18n="exposureEyebrow">Exposición en la trayectoria</span>
+        <span class="head-bearing" id="exposureSrc">OpenStreetMap</span>
+      </div>
+      <div id="exposureBody" class="exposure"></div>
+    </div>
+
+    <div id="cmdBlock" style="display:none">
+      <div class="sector-head">
+        <span class="eyebrow" data-i18n="cmdEyebrow">Mando · recursos desplegados</span>
+        <span class="head-bearing" id="worstAlert">—</span>
+      </div>
+      <div class="live-bar">
+        <div class="live-dot" id="liveDot"></div>
+        <span id="liveStatus">GPS manual</span>
+        <button id="liveBtn" onclick="toggleLiveFeed()">Live GPS</button>
+      </div>
+      <ul id="resourceList" class="sector-list"></ul>
+      <div class="disclaimer" data-i18n="cmdDisclaimer">Toca el mapa para situar un recurso. La alerta es apoyo a la decisión, no autoridad: la observación en terreno manda.</div>
+    </div>
+
+    <div class="confidence">
+      <div class="conf-meter"><div class="conf-fill" id="conffill"></div></div>
+      <div class="conf-label"><span data-i18n="confLabel">confianza</span> <b id="confval">—</b></div>
+    </div>
+    <div class="fuelinfo" id="fuelinfo" style="display:none">
+      <span data-i18n="fuelLabel">combustible</span>
+      <span class="src" id="fuelsrc">—</span>
+      <span class="badge" id="fuelbadge">—</span>
+    </div>
+    <div class="disclaimer" id="disclaimer"></div>
+  </div>
+
+  <script>
+    // ── i18n ──────────────────────────────────────────────────────────────────
+    const STRINGS = {
+      es: {
+        tagline:       'toca un punto · ve adónde va el fuego',
+        hintBold:      'Toca el mapa',
+        hintRest:      'para fijar un punto de ignición',
+        legendBurn:    'Probabilidad de quema',
+        legendLow:     'baja',
+        legendCertain: 'segura',
+        legendSectors: 'Sectores',
+        legendHead:    'cabeza',
+        legendFlanks:  'flancos',
+        legendRear:    'cola',
+        layerBurn:     'Probabilidad',
+        layerSectors:  'Sectores',
+        cmdLabel:      'Modo mando',
+        scenarioLabel: 'Escenario',
+        scenarioReal:  'Actual',
+        scenarioStrong:'Viento fuerte',
+        scenarioExtreme:'Extremo',
+        weatherScenario:'escenario',
+        cmdActive:     'Mando activo · toca para situar',
+        panelTitle:    'Predicción de propagación',
+        modeProb:      'probabilístico',
+        modeOffline:   'offline · en dispositivo',
+        statMaxP:      'P(quema) máx.',
+        statWind:      'Viento',
+        statMembers:   'Miembros',
+        arrivalLabel:  'Tiempo de llegada (p10 · p50 · p90)',
+        fireSizeLabel: 'Tamaño del fuego (p10 · p50 · p90)',
+        median:        'mediana',
+        sectorEyebrow: 'Sectores de comportamiento',
+        cmdEyebrow:    'Mando · recursos desplegados',
+        cmdDisclaimer: 'Toca el mapa para situar un recurso. La alerta es apoyo a la decisión, no autoridad: la observación en terreno manda.',
+        confLabel:     'confianza',
+        fuelLabel:     'combustible',
+        disclaimer:    'Previsión predespliegue · bucle abierto, sin verdad de campo. Tratar como probabilidad, no como línea.',
+        noSpread:      'Sin propagación bajo las condiciones actuales — combustible húmedo o viento muy débil. Resultado honesto: aquí el fuego no corre ahora.',
+        noSpreadScenario: 'Ni bajo este escenario corre el fuego aquí — combustible lento o poco inflamable (p.ej. hojarasca de bosque). Prueba pasto o matorral.',
+        noticeWater:   'Parece agua abierta (sin combustible vegetal). Toca sobre tierra con vegetación para predecir la propagación.',
+        flameLabel:    'llama',
+        exposureEyebrow: 'Exposición en la trayectoria',
+        exposureLoading: 'analizando exposición…',
+        exposurePlaces:  'núcleos en la huella',
+        exposureCritical: 'puntos críticos',
+        exposureNone:    'sin elementos mapeados dentro de la huella (zona despoblada).',
+        sectorHead:    'Cabeza',
+        sectorRFlank:  'Flanco dcho.',
+        sectorLFlank:  'Flanco izdo.',
+        sectorRear:    'Cola',
+        alertSafe:     'seguro',
+        alertWatch:    'atención',
+        alertDanger:   'peligro',
+        headPrefix:    'cabeza →',
+        noResources:   'sin recursos',
+        placeResource: 'Toca el mapa para situar un recurso.',
+        arrivalOf:     'llegada',
+        reasonAtOrigin:  'en el origen — el fuego está aquí',
+        reasonArrivesIn: 'el fuego llega en ~{m} min',
+        reasonInHead:    'en la cabeza — por donde corre el fuego',
+        reasonFlankRight:'flanco derecho — el fuego se ensancha aquí',
+        reasonFlankLeft: 'flanco izquierdo — el fuego se ensancha aquí',
+        reasonRear:      'detrás del fuego (retroceso, baja intensidad)',
+        reasonInPath:    'en la trayectoria — el fuego llega en ~{m} min',
+        reasonOutside:   'fuera del footprint previsto',
+        liveManual:    'GPS manual · toca para situar',
+        liveConnecting:'Conectando…',
+        liveConnected: 'GPS en vivo',
+        liveLost:      'Señal perdida',
+        liveBtnOn:     'Live ✓',
+        liveBtnOff:    'Live GPS',
+        advanceOf:     'avance',
+        fuelLocal:     'capa local regional',
+        fuelCached:    'global v0 · caché',
+        fuelGenerated: 'modelo único (sin datos)',
+        fuelBiome:     'mapa de biomas WorldCover',
+        fuelOSM:       'parcelas OpenStreetMap',
+        loadMsg1:      'Ingiriendo terreno · combustible · meteorología…',
+        loadMsg2:      'Ejecutando ensemble…',
+        loadFailed:    'Predicción fallida',
+        tilesDownload: '⬇ Descargar tiles de la región',
+        tilesStarting: '⏳ Iniciando descarga…',
+        tilesProgress: '⏳ Descargando tiles…',
+        tilesFailed:   '✗ Descarga fallida',
+        critLabel:     'crítico',
+        healthElmfire: '⚠ ELMFIRE no encontrado — configura ELMFIRE_BIN en .env',
+        healthProj:    '⚠ PROJ no encontrado — ejecuta dev.sh para activar el entorno conda',
+      },
+      en: {
+        tagline:       'tap a point · see where fire goes',
+        hintBold:      'Tap the map',
+        hintRest:      'to set an ignition point',
+        legendBurn:    'Burn probability',
+        legendLow:     'low',
+        legendCertain: 'certain',
+        legendSectors: 'Sectors',
+        legendHead:    'head',
+        legendFlanks:  'flanks',
+        legendRear:    'rear',
+        layerBurn:     'Probability',
+        layerSectors:  'Sectors',
+        cmdLabel:      'Command mode',
+        scenarioLabel: 'Scenario',
+        scenarioReal:  'Actual',
+        scenarioStrong:'Strong wind',
+        scenarioExtreme:'Extreme',
+        weatherScenario:'scenario',
+        cmdActive:     'Command active · tap to place',
+        panelTitle:    'Spread forecast',
+        modeProb:      'probabilistic',
+        modeOffline:   'offline · on-device',
+        statMaxP:      'Max P(burn)',
+        statWind:      'Wind',
+        statMembers:   'Members',
+        arrivalLabel:  'Arrival time (p10 · p50 · p90)',
+        fireSizeLabel: 'Fire size (p10 · p50 · p90)',
+        median:        'median',
+        sectorEyebrow: 'Behaviour sectors',
+        cmdEyebrow:    'Command · deployed resources',
+        cmdDisclaimer: 'Tap the map to place a resource. Alerts are decision support, not authority: ground truth overrides.',
+        confLabel:     'confidence',
+        fuelLabel:     'fuel',
+        disclaimer:    'Pre-deployment forecast · open-loop, no ground truth. Treat as a probability, not a line.',
+        noSpread:      'No spread under current conditions — moist fuel or very light wind. Honest result: fire does not run here right now.',
+        noSpreadScenario: 'Even under this scenario the fire does not run here — slow or barely-flammable fuel (e.g. forest litter). Try grass or shrub.',
+        noticeWater:   'Looks like open water (no vegetation fuel). Tap on vegetated land to predict spread.',
+        flameLabel:    'flame',
+        exposureEyebrow: "In the fire's path",
+        exposureLoading: 'assessing exposure…',
+        exposurePlaces:  'places in the footprint',
+        exposureCritical: 'critical sites',
+        exposureNone:    'no mapped assets inside the footprint (unpopulated area).',
+        sectorHead:    'Head',
+        sectorRFlank:  'R. flank',
+        sectorLFlank:  'L. flank',
+        sectorRear:    'Rear',
+        alertSafe:     'safe',
+        alertWatch:    'watch',
+        alertDanger:   'danger',
+        headPrefix:    'head →',
+        noResources:   'no resources',
+        placeResource: 'Tap the map to place a resource.',
+        arrivalOf:     'arrival',
+        reasonAtOrigin:  'at the fire origin — the fire is here',
+        reasonArrivesIn: 'fire arrives in ~{m} min',
+        reasonInHead:    'sits in the head — where the fire runs',
+        reasonFlankRight:'sits on a right flank — the fire widens here',
+        reasonFlankLeft: 'sits on a left flank — the fire widens here',
+        reasonRear:      'behind the fire (backing, low intensity)',
+        reasonInPath:    'in the predicted path — fire reaches here in ~{m} min',
+        reasonOutside:   'outside the predicted footprint',
+        liveManual:    'Manual GPS · tap to place',
+        liveConnecting:'Connecting…',
+        liveConnected: 'Live GPS',
+        liveLost:      'Signal lost',
+        liveBtnOn:     'Live ✓',
+        liveBtnOff:    'Live GPS',
+        advanceOf:     'advance',
+        fuelLocal:     'local regional layer',
+        fuelCached:    'global v0 · cached',
+        fuelGenerated: 'single model (no data)',
+        fuelBiome:     'WorldCover biome map',
+        fuelOSM:       'OpenStreetMap parcels',
+        loadMsg1:      'Auto-ingesting terrain · fuel · weather…',
+        loadMsg2:      'Running ensemble…',
+        loadFailed:    'Prediction failed',
+        tilesDownload: '⬇ Download region tiles',
+        tilesStarting: '⏳ Starting download…',
+        tilesProgress: '⏳ Downloading tiles…',
+        tilesFailed:   '✗ Download failed',
+        critLabel:     'critical',
+        healthElmfire: '⚠ ELMFIRE not found — set ELMFIRE_BIN in .env',
+        healthProj:    '⚠ PROJ data missing — run via dev.sh to activate conda env',
+      },
+    };
+
+    let lang = localStorage.getItem('ignea_lang') || 'es';
+    const t = k => STRINGS[lang]?.[k] ?? STRINGS.en[k] ?? k;
+
+    function setLang(l) {
+      lang = l;
+      localStorage.setItem('ignea_lang', l);
+      applyLang();
+    }
+
+    function applyLang() {
+      document.documentElement.lang = lang;
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        el.textContent = t(el.dataset.i18n);
+      });
+      document.querySelectorAll('#langToggle span').forEach(s =>
+        s.classList.toggle('on', s.dataset.lang === lang));
+      // Rebuild label dicts with new language
+      SECTOR_LABEL.head        = t('sectorHead');
+      SECTOR_LABEL.right_flank = t('sectorRFlank');
+      SECTOR_LABEL.left_flank  = t('sectorLFlank');
+      SECTOR_LABEL.rear        = t('sectorRear');
+      ALERT_LABEL.safe   = t('alertSafe');
+      ALERT_LABEL.watch  = t('alertWatch');
+      ALERT_LABEL.danger = t('alertDanger');
+      // Re-render panel text (no overlay redraw) AND the command resource list — its alert pills +
+      // reasons are baked at render time, so without this a language switch left them in the old
+      // language (an ES/EN mix in the command dashboard).
+      if (lastResult) renderPanel(lastResult);
+      if (resources.length || lastAssessment) renderResources(lastAssessment);
+      _setLiveStatus(liveState);   // live-feed bar label in the new language, same state
+    }
+
+    // ── MapLibre setup ────────────────────────────────────────────────────────
+    const _pt = new pmtiles.Protocol();
+    maplibregl.addProtocol('pmtiles', _pt.tile.bind(_pt));
+
+    function osmStyle() {
+      // Esri World Topo (free, no API key) — a topographic basemap that is far more app-tolerant than
+      // the raw OSM tile server (whose usage policy rate-limits/blocks app traffic, which left the map
+      // black). Topo also suits a wildland tool: terrain, vegetation and roads at a glance. Esri uses
+      // {z}/{y}/{x} tile order. A raster source only needs to DISPLAY (no CORS), so it renders offline-
+      // capable once cached by the browser/webview.
+      return {
+        version: 8,
+        sources: { base: {
+          type: 'raster',
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'Tiles © Esri — Esri, HERE, Garmin, USGS · © OpenStreetMap contributors',
+        } },
+        layers: [{ id: 'base', type: 'raster', source: 'base',
+                   paint: { 'raster-saturation': -0.15 } }]
+      };
+    }
+
+    function offlineTileStyle(tileUrl) {
+      return {
+        version: 8,
+        sources: { protomaps: { type: 'vector', url: tileUrl,
+                                attribution: '© OpenStreetMap contributors, Protomaps' } },
+        layers: [
+          { id: 'bg',     type: 'background', paint: { 'background-color': '#0d0f13' } },
+          { id: 'earth',  type: 'fill', source: 'protomaps', 'source-layer': 'earth',
+            paint: { 'fill-color': '#161c28' } },
+          { id: 'water',  type: 'fill', source: 'protomaps', 'source-layer': 'water',
+            paint: { 'fill-color': '#0d1520' } },
+          { id: 'landuse_green', type: 'fill', source: 'protomaps', 'source-layer': 'landuse',
+            filter: ['match', ['get', 'kind'],
+                     ['grass','park','forest','nature_reserve','scrub','wood'], true, false],
+            paint: { 'fill-color': '#192319', 'fill-opacity': 0.65 } },
+          { id: 'roads_major', type: 'line', source: 'protomaps', 'source-layer': 'roads',
+            filter: ['match', ['get', 'kind'], ['highway','major_road'], true, false],
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#2a3040',
+                     'line-width': ['interpolate',['linear'],['zoom'],6,1,14,4] } },
+          { id: 'roads_minor', type: 'line', source: 'protomaps', 'source-layer': 'roads',
+            minzoom: 12,
+            filter: ['match', ['get','kind'],['minor_road','path','track'],true,false],
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#202836', 'line-width': 1 } },
+        ]
+      };
+    }
+
+    const map = new maplibregl.Map({
+      container: 'map', style: osmStyle(),
+      center: [2.10, 41.42], zoom: 11, attributionControl: true
+    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+
+    let marker      = null;
+    let engine      = 'online';
+    let runId       = null;
+    let commandMode = false;
+    let resources   = [];
+    let resMarkers  = [];
+    let lastResult  = null;
+    let tileJobId   = null;
+    let tileJobTimer = null;
+    let lastTap     = null;   // {lat, lon} of the last ignition, so a scenario change can re-run it
+    let lastAssessment = null; // last command assessment, so a language switch re-renders the list
+    let liveState   = 'manual'; // live GPS feed state, so a language switch re-renders its label
+    let lastExposure = null;  // last exposure result {places, crit}, re-rendered on language switch
+
+    // "What-if" scenarios (a pre-deployment tool must let crews explore adverse weather, not only the
+    // current — often calm/moist — conditions). null = real weather; the others override wind (m/s) +
+    // dryness on top of the real forecast, and are flagged as a scenario in the panel (never "real").
+    let scenario = 'real';
+    const SCENARIOS = {
+      real:    null,
+      strong:  { windMs: 11, rhPct: 30 },              // ~40 km/h, drier — a strong-wind day
+      extreme: { windMs: 15, rhPct: 12, tempC: 34 },   // ~54 km/h, hot & very dry — design fire
+    };
+    function setScenario(s) {
+      if (!(s in SCENARIOS)) return;
+      scenario = s;
+      document.querySelectorAll('#scenarioToggle span.sc').forEach(el =>
+        el.classList.toggle('on', el.dataset.scenario === s));
+      if (lastTap) predict(lastTap.lat, lastTap.lon);   // re-run the current point under the new conditions
+    }
+    let posEvt      = null;   // EventSource for live GPS feed
+    const $ = id => document.getElementById(id);
+
+    // Escape untrusted strings before they touch innerHTML. External data reaches the DOM from two
+    // places — OSM place/critical names (exposure) and resource ids from the live position feed
+    // (/api/positions: GPS trackers, crew apps, radio bridges) — none of which we control. Without
+    // this a crafted name/id (e.g. `<img onerror>`) would run in the command dashboard.
+    const escapeHtml = s => String(s == null ? '' : s).replace(/[<>&"']/g, c =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    const SECTOR_LABEL = {
+      head: t('sectorHead'), right_flank: t('sectorRFlank'),
+      left_flank: t('sectorLFlank'), rear: t('sectorRear'),
+    };
+    const SECTOR_COLOR = { head: '#ff5a2b', right_flank: '#ffb547', left_flank: '#ffb547', rear: '#3fb27f' };
+    const ALERT_LABEL  = { safe: t('alertSafe'), watch: t('alertWatch'), danger: t('alertDanger') };
+
+    // Translate a resource's safety reason into the current language from its reason_key + reason_min
+    // (the engine returns a language-agnostic key); fall back to the engine's English prose (e.g. the
+    // online /api/assess path, which doesn't yet send keys).
+    const REASON_KEY = {
+      atOrigin: 'reasonAtOrigin', arrivesIn: 'reasonArrivesIn', inHead: 'reasonInHead',
+      onFlankRight: 'reasonFlankRight', onFlankLeft: 'reasonFlankLeft', rear: 'reasonRear',
+      inPath: 'reasonInPath', outside: 'reasonOutside',
+    };
+    function reasonText(s) {
+      const k = s && s.reason_key && REASON_KEY[s.reason_key];
+      if (!k) return (s && s.reason) || '';
+      return t(k).replace('{m}', s.reason_min);
+    }
+
+    const bearingName = b => ['N','NE','E','SE','S','SO','O','NO'][Math.round(((b % 360) / 45)) % 8];
+
+    function fmtDuration(s) {
+      if (s == null) return '—';
+      const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+      return h > 0 ? `${h}h${m.toString().padStart(2,'0')}` : `${m}min`;
+    }
+    function confColor(c) { return c >= 0.7 ? 'var(--good)' : c >= 0.45 ? 'var(--warn)' : 'var(--bad)'; }
+
+    // ── Overlay helpers ───────────────────────────────────────────────────────
+
+    function clearOverlay() {
+      for (const id of ['burn', 'sectors']) {
+        if (map.getLayer(id)) map.removeLayer(id);
+        if (map.getSource(id)) map.removeSource(id);
+      }
+    }
+
+    function addImageLayer(id, ov, opacity) {
+      map.addSource(id, { type: 'image', url: ov.url, coordinates: ov.coordinates });
+      map.addLayer({ id, type: 'raster', source: id,
+                     paint: { 'raster-opacity': opacity, 'raster-resampling': 'linear' } });
+    }
+
+    let activeLayer = 'burn';
+    function showLayer(which) {
+      activeLayer = which;
+      if (map.getLayer('burn'))    map.setPaintProperty('burn',    'raster-opacity', which === 'burn'    ? 0.82 : 0);
+      if (map.getLayer('sectors')) map.setPaintProperty('sectors', 'raster-opacity', which === 'sectors' ? 0.80 : 0);
+      document.querySelectorAll('#layerToggle span').forEach(s => s.classList.toggle('on', s.dataset.layer === which));
+      $('legend').classList.toggle('show', which === 'burn');
+      $('sectorLegend').classList.toggle('show', which === 'sectors');
+    }
+
+    // Run fn once the style can accept sources (addSource/addLayer). Adding a source needs the STYLE
+    // parsed, NOT every basemap tile downloaded — our style JSON is inline, so it is ready in a few ms
+    // regardless of the network. We deliberately key on 'style.load' rather than 'idle' (which only
+    // fires once ALL visible tiles have loaded): on a slow link 'idle' can be many seconds away, and
+    // the old code then wiped the Esri basemap for a black background — the very "black map" failure.
+    // Now the fire overlay draws the instant the style is ready and the basemap keeps streaming in
+    // underneath, never discarded for slowness. The long safety net only triggers on a genuinely
+    // broken style (never observed for an inline style) so something still renders.
+    function whenMapReady(fn) {
+      let done = false;
+      const go = () => { if (done) return; done = true; try { fn(); } catch (_) {} };
+      if (map.isStyleLoaded()) { go(); return; }
+      map.once('style.load', go);
+      const t0 = Date.now();
+      (function poll() {
+        if (done) return;
+        if (map.isStyleLoaded()) { go(); return; }
+        if (Date.now() - t0 > 6000) {   // style itself never parsed — last-resort bare background
+          map.once('style.load', go);
+          map.setStyle({ version: 8, sources: {},
+            layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0d0f13' } }] });
+          return;
+        }
+        setTimeout(poll, 80);
+      })();
+    }
+
+    function applyOverlays(d) {
+      whenMapReady(() => {
+        clearOverlay();
+        const ov = d.overlay, sov = d.sector_overlay;
+        if (ov)  addImageLayer('burn',    ov,  0.82);
+        if (sov) addImageLayer('sectors', sov, 0);
+        const box = ov || sov;
+        if (box) {
+          const fb = box.fit_bounds || box.bounds;   // zoom to the fire, not the whole grid
+          map.fitBounds([[fb[0], fb[1]], [fb[2], fb[3]]], { padding: 60, maxZoom: 14, duration: 800 });
+        }
+        showLayer('burn');
+      });
+    }
+
+    // ── Prediction ────────────────────────────────────────────────────────────
+
+    // Call the backend. Throws {unreachable:true} if the server is absent (→ offline fallback),
+    // or {unreachable:false, hint} if the server responded with an error (→ surface it).
+    async function predictOnline(lat, lon) {
+      let r;
+      try {
+        r = await fetch('/api/predict', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat, lon, engine }),
+        });
+      } catch (_) {
+        throw Object.assign(new Error('server unreachable'), { unreachable: true });
+      }
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        const detail = err.detail || err.error || r.statusText;
+        throw Object.assign(new Error(detail), { hint: err.hint || '', unreachable: false });
+      }
+      // A Tauri/PWA webview with no backend answers /api/* with 200 + the index.html shell, so a
+      // "successful" response can still be HTML. Treat a non-JSON body as "no server" → offline.
+      try {
+        return await r.json();
+      } catch (_) {
+        throw Object.assign(new Error('no backend (served HTML)'), { unreachable: true });
+      }
+    }
+
+    async function predict(lat, lon) {
+      $('hint').style.opacity = 0;
+      const lh = $('loadhint');
+      lh.textContent = '';
+      lh.classList.remove('show');
+      $('loading').classList.add('on');
+      $('loadmsg').textContent = t('loadMsg1');
+      const step2Timer = setTimeout(() => {
+        if ($('loading').classList.contains('on'))
+          $('loadmsg').textContent = t('loadMsg2');
+      }, 2500);
+
+      try {
+        let d;
+        const sc = SCENARIOS[scenario] || undefined;   // "what-if" weather override (undefined = real)
+        // A what-if scenario always runs on the on-device engine: it is the engine that supports
+        // weather overrides, and a scenario is an exploration, not a live forecast — so the chips
+        // behave identically with or without the online server (before, an online run silently
+        // ignored the selected scenario). The panel flags the result "escenario", never real.
+        if (engine === 'offline' || sc) {
+          d = await IgneaOffline.predict(lat, lon, { scenario: sc });
+        } else {
+          try {
+            d = await predictOnline(lat, lon);
+          } catch (e) {
+            if (!e.unreachable) throw e;          // real server error → surface hint
+            d = await IgneaOffline.predict(lat, lon, { scenario: sc }); // server absent → in-webview engine
+          }
+        }
+        clearTimeout(step2Timer);
+        render(d);
+      } catch (e) {
+        clearTimeout(step2Timer);
+        $('loadmsg').textContent = t('loadFailed') + ': ' + e.message;
+        if (e.hint) { lh.textContent = '💡 ' + e.hint; lh.classList.add('show'); }
+        setTimeout(() => {
+          $('loading').classList.remove('on');
+          lh.textContent = ''; lh.classList.remove('show');
+          $('hint').style.opacity = 1;
+        }, 5000);
+        return;
+      }
+      $('loading').classList.remove('on');
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+
+    function render(d) {
+      lastResult = d;
+      _saveResult(d);
+      $('hint').style.display = 'none';   // done guiding the first tap; avoid overlap with the layer toggle
+      applyOverlays(d);
+      renderPanel(d);
+      $('panel').classList.add('open');
+      runId = d.run_id || null;
+      exitCommand();
+      clearResources();
+      $('cmdToggle').style.display = runId ? 'inline-flex' : 'none';
+      analyzeExposure(d);   // async, fills in "what's in the fire's path" from OpenStreetMap
+    }
+
+    // Predictive exposure/impact analysis (Phase 6c): count buildings, road length, populated places
+    // and critical sites inside the predicted footprint via the free OpenStreetMap Overpass API — a
+    // free, predictive version of the paid tools' flagship. Fully async + graceful (hides on failure);
+    // never blocks the prediction. Needs internet; a purely-offline run just skips it.
+    async function analyzeExposure(d) {
+      const block = $('exposureBlock'), body = $('exposureBody');
+      if (!d || !d._grid || !d.overlay || !(d.max_burn_probability > 0)) { block.style.display = 'none'; return; }
+      const g = d._grid;
+      const fb = d.overlay.fit_bounds || d.overlay.bounds;   // [w, s, e, n]
+      const bbox = `${fb[1].toFixed(5)},${fb[0].toFixed(5)},${fb[3].toFixed(5)},${fb[2].toFixed(5)}`; // s,w,n,e
+      // Sparse point features only (populated places + critical sites) → a tiny, fast Overpass query
+      // that stays reliable even when the public API is busy. "Which villages/hospitals are in the
+      // fire's path" is the operational alert; heavy building/road counts are deferred (Phase 6c+).
+      const q = '[out:json][timeout:15];'
+        + `(node["place"~"^(city|town|village|hamlet|suburb)$"](${bbox});`
+        + `nwr["amenity"~"^(hospital|school|kindergarten|fire_station|police)$"](${bbox}););out tags center 400;`;
+      body.innerHTML = `<div class="xstat xnames">${t('exposureLoading')}</div>`;
+      block.style.display = 'block';
+      // POST the raw query as the body (the `data=` form is much slower / gets rejected). overpass-api.de
+      // answers a sparse query in well under 1 s; kumi.systems is the fallback.
+      const endpoints = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+      let data = null;
+      for (const ep of endpoints) {
+        try {
+          const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 12000);
+          const r = await fetch(ep, { method: 'POST', body: q, signal: ctrl.signal });
+          clearTimeout(to);
+          if (r.ok) { data = await r.json(); break; }
+        } catch (_) { /* try next endpoint */ }
+      }
+      if (lastResult !== d) return;                       // a newer prediction superseded this
+      if (!data) { block.style.display = 'none'; return; } // Overpass unavailable → silently skip
+      const finite = (lat, lon) => {
+        const col = Math.round(g.c0 + ((lon - g.lon) * g.mPerDegLon) / g.cellM);
+        const row = Math.round(g.r0 - ((lat - g.lat) * g.mPerDegLat) / g.cellM);
+        return (row >= 0 && row < g.rows && col >= 0 && col < g.cols) && isFinite(g.arrival[row * g.cols + col]);
+      };
+      const places = new Set(), crit = new Set();
+      for (const el of data.elements || []) {
+        const tg = el.tags || {};
+        const la = el.lat != null ? el.lat : (el.center && el.center.lat);
+        const lo = el.lon != null ? el.lon : (el.center && el.center.lon);
+        if (la == null || !finite(la, lo)) continue;
+        if (tg.place && tg.name) places.add(tg.name);
+        else if (tg.amenity && tg.name) crit.add(tg.name);
+      }
+      lastExposure = { places: [...places], crit: [...crit] };   // data kept apart from language
+      renderExposure();
+    }
+
+    // Render the exposure block from the stored result in the CURRENT language — called again on a
+    // language switch so the "in the fire's path" line never stays in the previous language.
+    function renderExposure() {
+      if (!lastExposure) return;
+      const rows = [];
+      const { places, crit } = lastExposure;
+      if (places.length) rows.push(`<div class="xstat"><span class="xn">${places.length}</span><span>${t('exposurePlaces')}: <span class="xnames">${places.slice(0, 8).map(escapeHtml).join(', ')}</span></span></div>`);
+      if (crit.length) rows.push(`<div class="xstat crit"><span class="xn">${crit.length}</span><span>${t('exposureCritical')}: <span class="xnames">${crit.slice(0, 6).map(escapeHtml).join(', ')}</span></span></div>`);
+      $('exposureBody').innerHTML = rows.length ? rows.join('') : `<div class="xstat xnames">${t('exposureNone')}</div>`;
+    }
+
+    function renderPanel(d) {
+      $('mode').textContent = (d.engine || '').startsWith('offline') ? t('modeOffline') : t('modeProb');
+      $('coords').textContent =
+        `${d.ignition.lat.toFixed(4)}, ${d.ignition.lon.toFixed(4)}  ·  EPSG:${d.epsg}`;
+      $('maxp').textContent    = (d.max_burn_probability * 100).toFixed(0) + '%';
+      const isScenario = d.weather_source === 'scenario';
+      $('wind').innerHTML = d.wind_ms + '<span class="u">m/s</span>'
+        + (isScenario ? ' <span class="u" style="color:var(--ember)">· ' + t('weatherScenario') + '</span>' : '');
+      $('members').textContent = d.num_members;
+      const a = d.arrival_time_s || {};
+      $('arr10').textContent = fmtDuration(a.p10);
+      $('arr90').textContent = fmtDuration(a.p90);
+      const fs = d.fire_size_ha || {};
+      $('fs10').textContent      = (fs.p10 ?? '—') + ' ha';
+      $('fs90').textContent      = (fs.p90 ?? '—') + ' ha';
+      $('firesize50').textContent = t('median') + ' ' + (fs.p50 ?? '—') + ' ha';
+      const c = d.confidence ?? 0;
+      $('conffill').style.width      = (c * 100) + '%';
+      $('conffill').style.background = confColor(c);
+      $('confval').textContent = c.toFixed(2);
+      renderFuel(d.fuel);
+      $('disclaimer').textContent = t('disclaimer');
+      renderSectors(d.sectors);
+      // Peak fire-behaviour severity: Byram flame length — a dispatcher reads it to judge how hot the
+      // head runs (a metric commercial tools surface and ÍGNEA's offline engine now computes too).
+      if (d.flame_length_m > 0 && d.sectors && d.sectors.sectors && d.sectors.sectors.length) {
+        $('headBearing').textContent += ` · ${t('flameLabel')} ~${d.flame_length_m} m`;
+      }
+      // No spread (moist fuel / calm wind) or open water are honest results, not empty panels: explain.
+      const notice = d.notice === 'water' ? t('noticeWater')
+                   : !(d.max_burn_probability > 0) ? (isScenario ? t('noSpreadScenario') : t('noSpread')) : '';
+      $('noSpread').textContent = notice;
+      $('noSpread').style.display = notice ? 'block' : 'none';
+    }
+
+    function closePanel() {
+      $('panel').classList.remove('open');
+    }
+
+    // ── Fuel info ─────────────────────────────────────────────────────────────
+
+    function renderFuel(f) {
+      if (!f) { $('fuelinfo').style.display = 'none'; return; }
+      const src = f.source || '';
+      let label = src.startsWith('local:')     ? t('fuelLocal')
+                : src === 'cached'             ? t('fuelCached')
+                : src === 'osm'                ? t('fuelOSM')
+                : src === 'worldcover-global'  ? t('fuelBiome')
+                :                                t('fuelGenerated');
+      if ((src === 'worldcover-global' || src === 'osm') && f.resolution_m)
+        label += f.resolution_m >= 1000 ? ' · ~' + Math.round(f.resolution_m / 1000) + ' km'
+                                        : ' · ~' + Math.round(f.resolution_m) + ' m';
+      $('fuelsrc').textContent = label;
+      const conf = f.confidence ?? 0;
+      $('fuelbadge').textContent  = conf.toFixed(2);
+      $('fuelbadge').style.color  = confColor(conf);
+      $('fuelinfo').style.display = 'flex';
+    }
+
+    // ── Sectors ───────────────────────────────────────────────────────────────
+
+    function renderSectors(s) {
+      const hasSectors = s && s.sectors && s.sectors.length;
+      $('sectorBlock').style.display  = hasSectors ? 'block' : 'none';
+      $('layerToggle').style.display  = hasSectors ? 'inline-flex' : 'none';
+      if (!hasSectors) return;
+      $('headBearing').textContent =
+        t('headPrefix') + ' ' + bearingName(s.head_bearing_deg) + ` (${Math.round(s.head_bearing_deg)}°)`;
+      const order = { head: 0, right_flank: 1, left_flank: 2, rear: 3 };
+      $('sectorList').innerHTML = s.sectors
+        .sort((x, y) => order[x.name] - order[y.name])
+        .map(sec => {
+          const crit  = sec.critical_cells > 0
+            ? `<span class="tag crit">${t('critLabel')} ×${sec.critical_cells}</span>` : '';
+          const inten = sec.max_intensity_kwm != null
+            ? `${Math.round(sec.max_intensity_kwm)} kW/m` : '—';
+          return `<li>
+            <span class="swatch" style="background:${SECTOR_COLOR[sec.name]}"></span>
+            <div><b>${SECTOR_LABEL[sec.name]}</b>${crit}
+              <div class="smeta">${sec.area_ha} ha · ${t('advanceOf')} ${bearingName(sec.bearing_deg)} · I ${inten}</div>
+            </div></li>`;
+        }).join('');
+    }
+
+    // ── Command mode ──────────────────────────────────────────────────────────
+
+    function toggleCommand() { commandMode ? exitCommand() : enterCommand(); }
+
+    function enterCommand() {
+      if (!runId) return;
+      commandMode = true;
+      $('cmdToggle').classList.add('on');
+      $('cmdLabel').textContent = t('cmdActive');
+      $('cmdBlock').style.display = 'block';
+      $('panel').classList.add('open');
+      renderResources(null);
+    }
+
+    function exitCommand() {
+      commandMode = false;
+      _disconnectLive();
+      $('cmdToggle').classList.remove('on');
+      $('cmdLabel').textContent = t('cmdLabel');
+      $('cmdBlock').style.display = 'none';
+    }
+
+    function clearResources() {
+      resMarkers.forEach(m => m.remove());
+      resMarkers = []; resources = [];
+    }
+
+    // ── Live GPS feed (Server-Sent Events) ────────────────────────────────────
+
+    function toggleLiveFeed() { posEvt ? _disconnectLive() : _connectLive(); }
+
+    function _connectLive() {
+      if (posEvt) return;
+      _setLiveStatus('connecting');
+      posEvt = new EventSource('/api/positions/stream');
+      posEvt.onopen  = () => _setLiveStatus('connected');
+      posEvt.onerror = () => { _setLiveStatus('lost'); posEvt = null; };
+      posEvt.onmessage = e => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'snapshot') _syncPositions(msg.positions, true);
+          else if (msg.type === 'update') _syncPositions(msg.positions, false);
+        } catch (_) {}
+      };
+    }
+
+    function _disconnectLive() {
+      if (!posEvt) return;
+      posEvt.close(); posEvt = null;
+      _setLiveStatus('manual');
+    }
+
+    function _setLiveStatus(state) {
+      liveState = state;   // remembered so a language switch re-renders the CURRENT state
+      const on = state === 'connected';
+      $('liveDot').classList.toggle('on', on);
+      $('liveBtn').classList.toggle('on', on);
+      $('liveBtn').textContent = on ? t('liveBtnOn') : t('liveBtnOff');
+      const labels = { manual: 'liveManual', connecting: 'liveConnecting',
+                       connected: 'liveConnected', lost: 'liveLost' };
+      $('liveStatus').textContent = t(labels[state] || 'liveManual');
+    }
+
+    function _syncPositions(positions, isSnapshot) {
+      if (!positions.length) return;
+      if (isSnapshot) { clearResources(); }
+      positions.forEach(p => _upsertLiveResource(p));
+    }
+
+    function _upsertLiveResource(pos) {
+      const idx = resources.findIndex(r => r.id === pos.id);
+      if (idx >= 0) {
+        resources[idx] = { id: pos.id, lat: pos.lat, lon: pos.lon };
+        resMarkers[idx].setLngLat([pos.lon, pos.lat]);
+      } else {
+        resources.push({ id: pos.id, lat: pos.lat, lon: pos.lon });
+        const el = document.createElement('div');
+        el.className = 'res-marker safe';
+        el.textContent = String(pos.id).slice(0, 4);
+        resMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([pos.lon, pos.lat]).addTo(map));
+      }
+      assessResources();
+    }
+
+    function addResource(lat, lon) {
+      const idx = resources.length;
+      resources.push({ id: 'R' + (idx + 1), lat, lon });
+      const el = document.createElement('div');
+      el.className = 'res-marker safe';
+      el.textContent = idx + 1;
+      resMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map));
+      assessResources();
+    }
+
+    async function assessResources() {
+      if (!runId || !resources.length) { renderResources(null); return; }
+      try {
+        let a;
+        if (lastResult && (lastResult.engine || '').startsWith('offline')) {
+          a = IgneaOffline.assess(lastResult, resources);   // in-webview, no server
+        } else {
+          const r = await fetch('/api/assess', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ run_id: runId, resources }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+          a = await r.json();
+        }
+        renderResources(a);
+      } catch (e) {
+        $('worstAlert').textContent = 'error: ' + e.message;
+      }
+    }
+
+    function renderResources(a) {
+      lastAssessment = a;
+      const worst    = a ? a.worst_alert : null;
+      $('worstAlert').innerHTML = worst
+        ? `<span class="alert-pill ${worst}">${ALERT_LABEL[worst].toUpperCase()}</span>`
+        : (resources.length ? '…' : t('noResources'));
+      const statuses = (a && a.resources) || [];
+      statuses.forEach((s, i) => {
+        const el = resMarkers[i]?.getElement();
+        // NEVER wipe className here: MapLibre anchors custom markers via its own classes
+        // (maplibregl-marker → position:absolute;top:0;left:0) plus an inline transform.
+        // `el.className = …` erased those classes, dropping the marker into normal flow and
+        // stranding it kilometres from the tap after the first assessment.
+        if (el) { el.classList.remove('safe', 'watch', 'danger'); el.classList.add(s.alert); }
+      });
+      $('resourceList').innerHTML = statuses.map(s => {
+        const arr = s.arrival_s != null ? fmtDuration(s.arrival_s) : '—';
+        const sec = s.sector ? ' · ' + (SECTOR_LABEL[s.sector] || s.sector).toLowerCase() : '';
+        return `<li>
+          <span class="swatch res-marker ${s.alert}" style="width:12px;height:12px;border:0;box-shadow:none"></span>
+          <div><b>${escapeHtml(s.id)}</b> <span class="alert-pill ${s.alert}">${ALERT_LABEL[s.alert]}</span>
+            <div class="smeta">${escapeHtml(reasonText(s))} · ${t('arrivalOf')} ${arr}${sec}</div>
+          </div></li>`;
+      }).join('') || `<li class="smeta" style="padding-left:2px">${t('placeResource')}</li>`;
+    }
+
+    // ── Basemap / engine toggle ───────────────────────────────────────────────
+
+    // Engine selection is decoupled from the basemap: the map stays on OSM (needs internet, which a
+    // demo laptop has) while the prediction engine switches to the in-webview offline model. The
+    // PMTiles offline basemap is a separate, field-only feature (see handleTilesBtn).
+    function setEngine(which) {
+      engine = which;
+      document.querySelectorAll('#engineToggle span').forEach(s =>
+        s.classList.toggle('on', s.dataset.engine === which));
+    }
+
+    async function _switchToOfflineBasemap() {
+      let tiles = [];
+      try { tiles = await (await fetch('/api/tiles/list')).json(); } catch (_) {}
+      const btn = $('tilesBtn');
+      btn.classList.add('show');
+      if (tiles.length > 0) {
+        const tile = tiles[0];
+        _switchBasemap(offlineTileStyle(`pmtiles://${location.origin}/tiles/${tile.name}`));
+        btn.textContent = `✓ ${tile.name} (${tile.size_mb} MB)`;
+        btn.className = 'ready show';
+      } else {
+        _setDarkFallbackStyle();
+        btn.textContent = t('tilesDownload');
+        btn.className = 'show';
+      }
+    }
+
+    function _setDarkFallbackStyle() {
+      _switchBasemap({ version: 8, sources: {},
+        layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0d0f13' } }] });
+    }
+
+    function _switchBasemap(style) {
+      map.setStyle(style);
+      map.once('styledata', () => { if (lastResult) applyOverlays(lastResult); });
+    }
+
+    // ── Tiles download ────────────────────────────────────────────────────────
+
+    async function handleTilesBtn() {
+      const btn = $('tilesBtn');
+      if (btn.classList.contains('ready') || btn.classList.contains('progress')) return;
+      const b = map.getBounds();
+      const bbox = [
+        Math.round(b.getWest()  * 1000) / 1000, Math.round(b.getSouth() * 1000) / 1000,
+        Math.round(b.getEast()  * 1000) / 1000, Math.round(b.getNorth() * 1000) / 1000,
+      ];
+      btn.textContent = t('tilesStarting'); btn.className = 'progress show';
+      try {
+        const r = await fetch('/api/tiles/download', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: `region_${Date.now()}`, bbox, zoom_max: 14 }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        tileJobId = j.job_id;
+        if (tileJobTimer) clearInterval(tileJobTimer);
+        tileJobTimer = setInterval(_pollTileJob, 3000);
+      } catch (e) {
+        btn.textContent = `✗ ${e.message}`; btn.className = 'err show';
+      }
+    }
+
+    async function _pollTileJob() {
+      if (!tileJobId) return;
+      const btn = $('tilesBtn');
+      try {
+        const j = await (await fetch(`/api/tiles/status/${tileJobId}`)).json();
+        if (j.status === 'done') {
+          clearInterval(tileJobTimer); tileJobTimer = null; tileJobId = null;
+          btn.textContent = `✓ ${j.name} ready`; btn.className = 'ready show';
+          await _switchToOfflineBasemap();
+        } else if (j.status === 'error') {
+          clearInterval(tileJobTimer); tileJobTimer = null; tileJobId = null;
+          btn.textContent = t('tilesFailed'); btn.className = 'err show';
+        } else {
+          btn.textContent = t('tilesProgress');
+        }
+      } catch (_) {}
+    }
+
+    // ── Session persistence ───────────────────────────────────────────────────
+    const _RESULT_KEY = 'ignea_last_result';
+
+    function _saveResult(d) {
+      // Strip the heavy offline grid (typed arrays) — it's only needed in-memory for command mode.
+      try { const { _grid, ...rest } = d; sessionStorage.setItem(_RESULT_KEY, JSON.stringify(rest)); } catch (_) {}
+    }
+
+    function _restoreResult() {
+      try {
+        const raw = sessionStorage.getItem(_RESULT_KEY);
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (!d?.ignition) return;
+        // Restore panel text + open panel; map overlays need a valid URL that still exists.
+        lastResult = d;
+        renderPanel(d);
+        $('panel').classList.add('open');
+        runId = d.run_id || null;
+        $('cmdToggle').style.display = runId ? 'inline-flex' : 'none';
+        // Try to re-apply overlays — they may still be on-disk if server is still running
+        if (d.overlay || d.sector_overlay) applyOverlays(d);
+      } catch (_) {}
+    }
+
+    // ── Health check ──────────────────────────────────────────────────────────
+
+    async function _checkHealth() {
+      let serverUp = false;
+      try {
+        const r = await fetch('/api/health');
+        // In a Tauri/PWA webview with no backend, /api/health answers 200 with the index.html shell,
+        // so r.ok is not enough — require a real JSON health payload before believing the server is up.
+        const h = r.ok ? await r.json() : null;   // throws on HTML → caught below → serverUp stays false
+        if (h && h.status) {
+          serverUp = true;
+          const cfg = h.config || {};
+          let warn = '';
+          if (!cfg.ELMFIRE_BIN_exists) warn = t('healthElmfire');
+          else if (!cfg.PROJ_DATA_exists) warn = t('healthProj');
+          const el = $('healthWarn');
+          if (warn) { el.textContent = warn; el.style.display = 'block'; }
+          else        el.style.display = 'none';
+        }
+      } catch (_) {}
+      // No backend (the standalone client .exe/PWA) → offline is the only engine: select it and
+      // hide the online/offline toggle so there's nothing misleading to click.
+      if (!serverUp) { setEngine('offline'); $('engineToggle').style.display = 'none'; }
+    }
+
+    // ── Map click ─────────────────────────────────────────────────────────────
+
+    map.on('click', e => {
+      const { lat, lng } = e.lngLat;
+      if (commandMode) { addResource(lat, lng); return; }
+      if (marker) marker.remove();
+      const el = document.createElement('div');
+      el.style.cssText =
+        'width:16px;height:16px;border-radius:50%;background:var(--ember);'
+        + 'border:2px solid #fff;box-shadow:0 0 12px rgba(255,106,43,.9);';
+      marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+      lastTap = { lat: lat, lon: lng };
+      predict(lat, lng);
+    });
+
+    // ── Keyboard shortcuts ────────────────────────────────────────────────────
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closePanel();
+    });
+
+    // Keyboard activation for lang toggle spans (accessibility)
+    document.querySelectorAll('#langToggle span').forEach(s => {
+      s.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setLang(s.dataset.lang); }
+      });
+    });
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+
+    // Apply non-default lang before paint (avoids flash of wrong language)
+    if (lang !== 'es') applyLang();
+
+    map.once('load', () => {
+      _checkHealth();
+      _restoreResult();
+    });
+
+    // Register the offline service worker ONLY on a real web origin (the PWA). In the Tauri .exe the
+    // assets are embedded and always available, so a SW adds nothing — and its cache would serve a
+    // stale index.html across app updates (the "Unexpected token '<'" bug). There we remove it.
+    if ('serviceWorker' in navigator) {
+      const webOrigin = location.protocol === 'https:'
+        || (location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname));
+      if (webOrigin) {
+        window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+      } else {
+        navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
+        if (window.caches) caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {});
+      }
+    }
+  </script>
+</body>
+</html>
