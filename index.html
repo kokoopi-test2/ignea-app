@@ -259,7 +259,7 @@
 
   <!-- Brand header — pointer-events: none; no interactive children here -->
   <header>
-    <span class="brand">Í<span class="spark">G</span>NEA</span>
+    <span class="brand" id="brand">Í<span class="spark">G</span>NEA</span>
     <span class="tagline" data-i18n="tagline">toca un punto · ve adónde va el fuego</span>
   </header>
 
@@ -271,6 +271,13 @@
 
   <!-- Config health warning (shown if ELMFIRE not found) -->
   <div id="healthWarn"></div>
+
+  <!-- Diagnostics overlay (support/debug: 5 taps on the ÍGNEA logo) -->
+  <div id="diagPanel" style="display:none; position:absolute; right:16px; bottom:16px; z-index:30;
+       background:var(--panel); border:1px solid var(--panel-line); border-radius:10px;
+       padding:10px 12px; font-family:var(--mono); font-size:10.5px; line-height:1.5;
+       color:var(--ink-dim); max-width:340px; max-height:46vh; overflow:auto;
+       backdrop-filter:blur(8px); white-space:pre-wrap"></div>
 
   <!-- Ignition hint -->
   <div class="hint" id="hint">
@@ -301,10 +308,24 @@
     </div>
   </div>
 
-  <!-- Layer toggle (probability / sectors) -->
+  <!-- Arrival isochrone legend (hour bands, early = hot) -->
+  <div class="legend" id="arrivalLegend">
+    <span data-i18n="legendArrival">Hora de llegada</span>
+    <div class="slegend">
+      <span><i style="background:#980c0c"></i>&lt;1h</span>
+      <span><i style="background:#db331a"></i>1–2h</span>
+      <span><i style="background:#ff8d29"></i>2–3h</span>
+      <span><i style="background:#ffc542"></i>3–4h</span>
+      <span><i style="background:#ffe88d"></i>4–5h</span>
+      <span><i style="background:#fff8cd"></i>&gt;5h</span>
+    </div>
+  </div>
+
+  <!-- Layer toggle (probability / sectors / arrival) -->
   <div id="layerToggle" style="display:none">
     <span data-layer="burn"    class="on" data-i18n="layerBurn"    onclick="showLayer('burn')">Probabilidad</span>
     <span data-layer="sectors"            data-i18n="layerSectors"  onclick="showLayer('sectors')">Sectores</span>
+    <span data-layer="arrival" id="arrivalChip" data-i18n="layerArrival" onclick="showLayer('arrival')">Llegada</span>
   </div>
 
   <!-- Engine toggle (online / offline) -->
@@ -384,6 +405,7 @@
         <button id="liveBtn" onclick="toggleLiveFeed()">Live GPS</button>
       </div>
       <ul id="resourceList" class="sector-list"></ul>
+      <div class="smeta" id="safetyDist" style="display:none; color:var(--warn); padding:2px 0 4px"></div>
       <div class="disclaimer" data-i18n="cmdDisclaimer">Toca el mapa para situar un recurso. La alerta es apoyo a la decisión, no autoridad: la observación en terreno manda.</div>
     </div>
 
@@ -415,6 +437,9 @@
         legendRear:    'cola',
         layerBurn:     'Probabilidad',
         layerSectors:  'Sectores',
+        layerArrival:  'Llegada',
+        legendArrival: 'Hora de llegada',
+        safetyDist:    'Distancia de seguridad ≥ {m} m (4× llama, NWCG)',
         cmdLabel:      'Modo mando',
         scenarioLabel: 'Escenario',
         scenarioReal:  'Actual',
@@ -501,6 +526,9 @@
         legendRear:    'rear',
         layerBurn:     'Probability',
         layerSectors:  'Sectors',
+        layerArrival:  'Arrival',
+        legendArrival: 'Arrival time',
+        safetyDist:    'Safety distance ≥ {m} m (4× flame, NWCG)',
         cmdLabel:      'Command mode',
         scenarioLabel: 'Scenario',
         scenarioReal:  'Actual',
@@ -679,6 +707,51 @@
     let lastAssessment = null; // last command assessment, so a language switch re-renders the list
     let liveState   = 'manual'; // live GPS feed state, so a language switch re-renders its label
     let lastExposure = null;  // last exposure result {places, crit}, re-rendered on language switch
+    let lastPredictMs = null; // end-to-end latency of the last prediction (diagnostics)
+
+    // ── Diagnostics (support/debug — 5 taps on the ÍGNEA logo) ────────────────
+    // Field support in seconds, not hours: data sources + ages, cache state, timings and the last
+    // runtime errors, readable on the device itself. No competitor exposes this to the operator.
+    const _errLog = [];
+    const _logErr = (msg) => { _errLog.push(new Date().toISOString().slice(11, 19) + ' ' + String(msg).slice(0, 140)); if (_errLog.length > 8) _errLog.shift(); };
+    window.addEventListener('error', e => _logErr(e.message));
+    window.addEventListener('unhandledrejection', e => _logErr(e.reason && e.reason.message || e.reason));
+
+    function _cacheCounts() {
+      let clim = 0, osm = 0, elev = 0;
+      try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i);
+        if (k.startsWith('ignea_clim_')) clim++; else if (k.startsWith('ignea_osm_')) osm++; else if (k.startsWith('ignea_elev_')) elev++; } } catch (_) {}
+      return { clim, osm, elev };
+    }
+    function _diagText() {
+      const d = lastResult, c = _cacheCounts();
+      const L = [];
+      L.push('ÍGNEA diagnostics · ' + new Date().toISOString().slice(0, 19));
+      L.push('engine: ' + (d ? d.engine : '—') + '  ·  predict: ' + (lastPredictMs != null ? lastPredictMs + ' ms' : '—'));
+      if (d) {
+        L.push('weather: ' + d.weather_source + ' (' + d.wind_ms + ' m/s @' + d.wind_dir_deg + '°)');
+        L.push('terrain: ' + d.terrain_source + '  ·  fuel: ' + (d.fuel && d.fuel.source) + ' ~' + (d.fuel && d.fuel.resolution_m) + ' m · conf ' + (d.fuel && d.fuel.confidence) + ' · mix ' + (d.fuel && d.fuel.mix));
+        L.push('grid: ' + (d._grid ? d._grid.rows + '×' + d._grid.cols + ' @' + d._grid.cellM + ' m' : '—') + '  ·  members: ' + d.num_members);
+        L.push('maxP: ' + d.max_burn_probability + '  ·  conf: ' + d.confidence + '  ·  run: ' + d.run_id);
+      }
+      L.push('caches: clim ' + c.clim + ' · osm ' + c.osm + ' · elev ' + c.elev + '  ·  sw: ' + (navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'none'));
+      L.push('lang: ' + lang + '  ·  scenario: ' + scenario + '  ·  online: ' + navigator.onLine);
+      L.push(_errLog.length ? 'last errors:\n  ' + _errLog.join('\n  ') : 'no runtime errors captured');
+      return L.join('\n');
+    }
+    let _brandTaps = 0, _brandTimer = null, _diagTimer = null;
+    function _brandTap() {
+      _brandTaps++;
+      clearTimeout(_brandTimer); _brandTimer = setTimeout(() => { _brandTaps = 0; }, 1600);
+      if (_brandTaps >= 5) {
+        _brandTaps = 0;
+        const p = $('diagPanel');
+        const on = p.style.display === 'none';
+        p.style.display = on ? 'block' : 'none';
+        clearInterval(_diagTimer);
+        if (on) { p.textContent = _diagText(); _diagTimer = setInterval(() => { p.textContent = _diagText(); }, 2000); }
+      }
+    }
 
     // "What-if" scenarios (a pre-deployment tool must let crews explore adverse weather, not only the
     // current — often calm/moist — conditions). null = real weather; the others override wind (m/s) +
@@ -739,7 +812,7 @@
     // ── Overlay helpers ───────────────────────────────────────────────────────
 
     function clearOverlay() {
-      for (const id of ['burn', 'sectors']) {
+      for (const id of ['burn', 'sectors', 'arrival']) {
         if (map.getLayer(id)) map.removeLayer(id);
         if (map.getSource(id)) map.removeSource(id);
       }
@@ -756,9 +829,11 @@
       activeLayer = which;
       if (map.getLayer('burn'))    map.setPaintProperty('burn',    'raster-opacity', which === 'burn'    ? 0.82 : 0);
       if (map.getLayer('sectors')) map.setPaintProperty('sectors', 'raster-opacity', which === 'sectors' ? 0.80 : 0);
+      if (map.getLayer('arrival')) map.setPaintProperty('arrival', 'raster-opacity', which === 'arrival' ? 0.85 : 0);
       document.querySelectorAll('#layerToggle span').forEach(s => s.classList.toggle('on', s.dataset.layer === which));
       $('legend').classList.toggle('show', which === 'burn');
       $('sectorLegend').classList.toggle('show', which === 'sectors');
+      $('arrivalLegend').classList.toggle('show', which === 'arrival');
     }
 
     // Run fn once the style can accept sources (addSource/addLayer). Adding a source needs the STYLE
@@ -791,9 +866,11 @@
     function applyOverlays(d) {
       whenMapReady(() => {
         clearOverlay();
-        const ov = d.overlay, sov = d.sector_overlay;
+        const ov = d.overlay, sov = d.sector_overlay, aov = d.arrival_overlay;
         if (ov)  addImageLayer('burn',    ov,  0.82);
         if (sov) addImageLayer('sectors', sov, 0);
+        if (aov) addImageLayer('arrival', aov, 0);
+        $('arrivalChip').style.display = aov ? '' : 'none';   // only when a likely footprint exists
         const box = ov || sov;
         if (box) {
           const fb = box.fit_bounds || box.bounds;   // zoom to the fire, not the whole grid
@@ -843,6 +920,7 @@
           $('loadmsg').textContent = t('loadMsg2');
       }, 2500);
 
+      const _t0 = performance.now();   // diagnostics: end-to-end prediction latency
       try {
         let d;
         const sc = SCENARIOS[scenario] || undefined;   // "what-if" weather override (undefined = real)
@@ -861,6 +939,7 @@
           }
         }
         clearTimeout(step2Timer);
+        lastPredictMs = Math.round(performance.now() - _t0);
         render(d);
       } catch (e) {
         clearTimeout(step2Timer);
@@ -1153,6 +1232,12 @@
 
     function renderResources(a) {
       lastAssessment = a;
+      // NWCG safety-zone doctrine: separation from the flames ≥ 4× flame length. Rendered from the
+      // prediction's Byram flame length so the operator sees a concrete number next to the grades.
+      const fl = lastResult && lastResult.flame_length_m;
+      const sd = $('safetyDist');
+      if (fl > 0) { sd.textContent = t('safetyDist').replace('{m}', String(Math.round(fl * 4))); sd.style.display = 'block'; }
+      else sd.style.display = 'none';
       const worst    = a ? a.worst_alert : null;
       $('worstAlert').innerHTML = worst
         ? `<span class="alert-pill ${worst}">${ALERT_LABEL[worst].toUpperCase()}</span>`
@@ -1341,6 +1426,7 @@
 
     // Apply non-default lang before paint (avoids flash of wrong language)
     if (lang !== 'es') applyLang();
+    $('brand').addEventListener('click', _brandTap);   // 5 taps → diagnostics overlay
 
     map.once('load', () => {
       _checkHealth();

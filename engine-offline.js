@@ -915,6 +915,54 @@
     return canvas.toDataURL("image/png");
   }
 
+  // Arrival-time isochrone bands — the "when does it get there" layer crews plan evacuations and
+  // resource moves with. Time is bilinearly interpolated (smooth shapes), then DISCRETISED into
+  // 1-hour bands (crisp boundaries); early arrival = hot colour (urgency), late = pale. Only the
+  // likely footprint (burn probability >= minProb) is painted, so the bands match the reported
+  // fire size, exactly like the sector wedges. Presentation-only (no physics → no Python mirror).
+  const ISO_COLORS = [ // band index 0 = first hour … 5 = sixth hour
+    [152, 12, 12], [219, 51, 26], [255, 141, 41], [255, 197, 66], [255, 232, 141], [255, 248, 205],
+  ];
+  function arrivalBandsToDataUrl(rows, cols, tField, pField, r0, c0, tstopS) {
+    const s = SUPERSAMPLE, W = cols * s, H = rows * s;
+    const canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(W, H);
+    const atT = (r, c) => {
+      if (!(r >= 0 && r < rows && c >= 0 && c < cols)) return Infinity;
+      const v = tField[r * cols + c];
+      return isFinite(v) ? v : Infinity;
+    };
+    const atP = (r, c) => (r >= 0 && r < rows && c >= 0 && c < cols) ? pField[r * cols + c] : 0;
+    const bandS = 3600.0;
+    for (let py = 0; py < H; py++) {
+      const gy = (py + 0.5) / s - 0.5, ry = Math.floor(gy), fy = gy - ry;
+      for (let px = 0; px < W; px++) {
+        const gx = (px + 0.5) / s - 0.5, rx = Math.floor(gx), fx = gx - rx;
+        const o = (py * W + px) * 4;
+        const p = atP(ry, rx) * (1 - fy) * (1 - fx) + atP(ry + 1, rx) * fy * (1 - fx)
+                + atP(ry, rx + 1) * (1 - fy) * fx + atP(ry + 1, rx + 1) * fy * fx;
+        if (p < 0.5) { img.data[o + 3] = 0; continue; }   // likely footprint only
+        // Interpolate time over the reached corners only (Infinity poisons the bilinear mix).
+        let tSum = 0, wSum = 0;
+        const corners = [[ry, rx, (1 - fy) * (1 - fx)], [ry + 1, rx, fy * (1 - fx)],
+                         [ry, rx + 1, (1 - fy) * fx], [ry + 1, rx + 1, fy * fx]];
+        for (const [rr, cc, w] of corners) { const tv = atT(rr, cc); if (isFinite(tv) && w > 0) { tSum += tv * w; wSum += w; } }
+        if (wSum <= 0) { img.data[o + 3] = 0; continue; }
+        const t = tSum / wSum;
+        const band = Math.max(0, Math.min(ISO_COLORS.length - 1, Math.floor(t / bandS)));
+        const rgb = ISO_COLORS[band];
+        // Thin bright separator at band boundaries → readable contour lines on any basemap.
+        const frac = (t % bandS) / bandS;
+        const isEdge = frac < 0.045 && band > 0;
+        img.data[o] = isEdge ? 255 : rgb[0]; img.data[o + 1] = isEdge ? 255 : rgb[1]; img.data[o + 2] = isEdge ? 255 : rgb[2];
+        img.data[o + 3] = Math.round((isEdge ? 235 : 190) * edgeFeather(gx, gy, rows, cols));
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas.toDataURL("image/png");
+  }
+
   // Sector overlay — smooth. Shape/alpha come from the bilinear burn footprint; colour comes from
   // the pixel's bearing from the ignition relative to the head (continuous → clean radial wedge
   // boundaries at ±45°/±135°, anti-aliased). No blocky per-cell categories.
@@ -1143,9 +1191,12 @@
     });
     const headBrg = sect.head_bearing_deg != null ? sect.head_bearing_deg : (weather.windDirDeg + 180) % 360;
     const sectorUrl = smoothSectorToDataUrl(rows, cols, probSmooth, r0, c0, headBrg);
+    // Hour-band arrival isochrones on the likely footprint (only when something likely burns).
+    const arrivalUrl = maxP >= 0.5 ? arrivalBandsToDataUrl(rows, cols, p50cell, prob, r0, c0, tstopS) : null;
 
     const overlay = { url: burnUrl, coordinates: coordinates, bounds: bounds, fit_bounds: fitBounds };
     const sectorOverlay = { url: sectorUrl, coordinates: coordinates, bounds: bounds, fit_bounds: fitBounds };
+    const arrivalOverlay = arrivalUrl ? { url: arrivalUrl, coordinates: coordinates, bounds: bounds, fit_bounds: fitBounds } : null;
 
     // Confidence + fuel provenance reflect the actual offline data used. With a per-cell land-cover
     // source the fuel is genuinely local, so confidence rises from the 0.30 single-model floor toward
@@ -1184,6 +1235,7 @@
       sectors: { head_bearing_deg: sect.head_bearing_deg, dominant: sect.dominant || null, crown_capable: false, sectors: sect.sectors },
       overlay: overlay,
       sector_overlay: sectorOverlay,
+      arrival_overlay: arrivalOverlay,
       run_id: "offline-" + Date.now().toString(36),
       // Kept for in-browser command-mode assessment (assess() reads this; not shown to the user).
       _grid: { arrival: p50cell, labels: sect.labels, rows: rows, cols: cols, r0: r0, c0: c0, cellM: cellM, lat: lat, lon: lon, mPerDegLat: mPerDegLat, mPerDegLon: mPerDegLon },
