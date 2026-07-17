@@ -748,6 +748,25 @@
       center: [2.10, 41.42], zoom: 11, maxZoom: 18.5, attributionControl: true
     });
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    map.addControl(new maplibregl.GeolocateControl({
+      positionOptions: { enableHighAccuracy: true },
+      trackUserLocation: false,   // one-shot centring, not a live-follow dot — this isn't a nav app
+      showAccuracyCircle: true,
+      showUserLocation: true,
+    }), 'top-right');
+    // Auto-centre on the user's real position on first load — the "where am I, not just where do I
+    // tap" gap. Independent of the online/offline ENGINE toggle: this is the browser/OS Geolocation
+    // API (GPS chip on mobile, Wi-Fi/IP on desktop), works with the network fully cut. Silent no-op
+    // if permission is denied or unavailable — the map just stays on the default centre, never blocks
+    // the one-tap-to-predict flow.
+    map.on('load', () => {
+      if (!navigator.geolocation) return;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => map.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: 12, duration: 1200 }),
+        () => { /* denied/unavailable — keep the default centre, no error shown */ },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+      );
+    });
 
     let marker      = null;
     let engine      = 'online';
