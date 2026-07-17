@@ -5,7 +5,7 @@
  * the shell is cached a prediction works with no server and no network (weather/terrain degrade to
  * built-in fallbacks). Bump CACHE on any shell change so clients never get stuck on a stale version.
  */
-const CACHE = "ignea-shell-v35";
+const CACHE = "ignea-shell-v36";
 const TILE_CACHE = "ignea-tiles-v1";   // basemap tiles, so viewed areas render offline
 const TILE_LIMIT = 800;                // cap tiles kept (rough FIFO trim) to bound disk use
 const SHELL = [

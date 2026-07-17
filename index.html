@@ -48,6 +48,14 @@
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 3px; backdrop-filter: blur(8px); display: flex;
     }
+    #uiScaleBtn {
+      /* UI text-size control: cycles 100→115→130→150 %. Sits left of the language toggle. */
+      position: absolute; top: 10px; right: 128px; z-index: 10; cursor: pointer;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 8px 12px; backdrop-filter: blur(8px); font-size: 11px; font-weight: 700;
+      color: var(--ink-dim); user-select: none; letter-spacing: .04em;
+    }
+    #uiScaleBtn:hover { color: var(--ink); }
     #langToggle span {
       font-size: 11px; padding: 5px 11px; border-radius: 999px; cursor: pointer;
       color: var(--ink-dim); transition: background .2s, color .2s; user-select: none;
@@ -282,6 +290,7 @@
   </header>
 
   <!-- Language toggle — standalone absolute so pointer-events work cleanly -->
+  <div id="uiScaleBtn" onclick="cycleUiScale()" title="Tamaño del texto / UI size">Aa</div>
   <div id="langToggle" role="group" aria-label="Language">
     <span data-lang="es" class="on" onclick="setLang('es')" role="button" tabindex="0">ES</span>
     <span data-lang="en" onclick="setLang('en')" role="button" tabindex="0">EN</span>
@@ -682,6 +691,10 @@
           type: 'raster',
           tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}'],
           tileSize: 256,
+          // Esri's rural coverage ends around z17; past it the server returns "Map data not yet
+          // available" placeholder tiles. Capping the SOURCE makes MapLibre overzoom the last real
+          // level instead (slightly soft, but always a real map).
+          maxzoom: 17,
           attribution: 'Tiles © Esri — Esri, HERE, Garmin, USGS · © OpenStreetMap contributors',
         } },
         layers: [{ id: 'base', type: 'raster', source: 'base',
@@ -720,7 +733,7 @@
 
     const map = new maplibregl.Map({
       container: 'map', style: osmStyle(),
-      center: [2.10, 41.42], zoom: 11, attributionControl: true
+      center: [2.10, 41.42], zoom: 11, maxZoom: 18.5, attributionControl: true
     });
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
 
@@ -745,6 +758,39 @@
     // .exe; web/PWA origins keep same-origin relative calls (empty base).
     const API_BASE = (location.hostname === 'tauri.localhost' || location.protocol === 'tauri:')
       ? 'http://127.0.0.1:8000' : '';
+
+    // ── UI scale (readability on 1080p → 4K and per-user preference) ──────────
+    // Fixed-px type is unreadable on a 4K panel at 100 % OS scaling. Auto-default from the screen
+    // (only when the OS isn't already compensating via devicePixelRatio), user-adjustable via the
+    // "Aa" pill (100→115→130→150 %), persisted. Implementation: CSS `zoom` on the UI chrome only —
+    // the map canvas is never scaled, so map hit-testing and marker anchoring stay untouched.
+    const UISCALE_SEL = ['header', '#panel', '#engineToggle', '#scenarioToggle', '#cmdToggle',
+      '#firesToggle', '#tilesBtn', '#layerToggle', '#langToggle', '#uiScaleBtn', '#legend',
+      '#sectorLegend', '#arrivalLegend', '#hint', '#diagPanel'];
+    const UISCALES = [1, 1.15, 1.3, 1.5];
+    function defaultUiScale() {
+      // dpr > 1.25 means the OS is already scaling (laptop 4K at 150 % etc.) — CSS px are fine.
+      if (window.devicePixelRatio > 1.25) return 1;
+      const w = Math.max(screen.width, screen.height);
+      if (w >= 3400) return 1.5;   // 4K at 100 %
+      if (w >= 2300) return 1.3;   // 1440p/2K at 100 %
+      return 1;
+    }
+    let uiScale = parseFloat(localStorage.getItem('ignea_uiscale')) || defaultUiScale();
+    function applyUiScale() {
+      for (const sel of UISCALE_SEL) {
+        const el = document.querySelector(sel);
+        if (el) el.style.zoom = uiScale;
+      }
+      // `zoom` multiplies rendered vh too — shrink the panel's cap so it never overflows the screen.
+      $('panel').style.maxHeight = (62 / uiScale) + 'vh';
+      $('uiScaleBtn').textContent = uiScale === 1 ? 'Aa' : 'Aa ' + Math.round(uiScale * 100) + '%';
+    }
+    function cycleUiScale() {
+      uiScale = UISCALES[(UISCALES.indexOf(uiScale) + 1) % UISCALES.length] || 1;
+      try { localStorage.setItem('ignea_uiscale', String(uiScale)); } catch (_) { /* none */ }
+      applyUiScale();
+    }
 
     // ── Diagnostics (support/debug — 5 taps on the ÍGNEA logo) ────────────────
     // Field support in seconds, not hours: data sources + ages, cache state, timings and the last
@@ -1515,6 +1561,7 @@
     // Apply non-default lang before paint (avoids flash of wrong language)
     if (lang !== 'es') applyLang();
     $('brand').addEventListener('click', _brandTap);   // 5 taps → diagnostics overlay
+    applyUiScale();                                    // resolution-aware UI scale (persisted)
 
     map.once('load', () => {
       _checkHealth();
