@@ -2,6 +2,13 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
+  <!-- Content-Security-Policy: strict allowlist. Only the five data providers the app actually
+       talks to may be contacted; everything else (scripts, objects, frames, form posts, any other
+       host) is refused by the browser itself — an exfiltration / injected-script barrier that
+       holds even if a future bug slipped through escaping. 'unsafe-inline' for script/style is
+       required by the inline app (documented residual risk; all dynamic HTML goes through
+       escapeHtml). frame-ancestors can't be set from a <meta> tag — noted in SECURITY docs. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://server.arcgisonline.com https://gibs.earthdata.nasa.gov; connect-src 'self' data: blob: http://127.0.0.1:8000 http://localhost:8000 https://api.open-meteo.com https://power.larc.nasa.gov https://overpass-api.de https://overpass.kumi.systems https://server.arcgisonline.com https://gibs.earthdata.nasa.gov; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>ÍGNEA — tap-to-predict</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23ff6a2b'/%3E%3Cpath d='M16 6c3 4-1 5 1 9 1 2 3 2 3 5a4 4 0 1 1-8 0c0-2 1-3 2-4-2 0-3-2-3-4 0-4 2-7 3-11z' fill='%23fff'/%3E%3C/svg%3E" />
@@ -215,9 +222,20 @@
     #cmdToggle.on .dot { background: var(--ember); box-shadow: 0 0 8px var(--ember); }
 
     /* ── Offline tiles button ─────────────────────────────────────────────── */
-    #tilesBtn {
-      /* Third row: scenario selector (92px) → command pill (140px) → offline-tiles button. */
+    #firesToggle {
+      /* Third row: scenario (92px) → command (140px) → satellite fires. */
       position: absolute; top: 184px; left: 16px; z-index: 6; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 7px;
+      background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
+      padding: 7px 13px; font-size: 12px; color: var(--ink-dim);
+      font-family: var(--sans); backdrop-filter: blur(8px); transition: color .2s, border-color .2s;
+    }
+    #firesToggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-dim); transition: background .2s; }
+    #firesToggle.on { color: var(--ink); border-color: var(--bad); }
+    #firesToggle.on .dot { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+    #tilesBtn {
+      /* Fourth row, below the satellite-fires toggle. */
+      position: absolute; top: 228px; left: 16px; z-index: 6; cursor: pointer;
       display: none; align-items: center; gap: 7px;
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 6px 12px; font-size: 11.5px; color: var(--ink-dim);
@@ -350,6 +368,11 @@
     <span class="dot"></span><span id="cmdLabel" data-i18n="cmdLabel">Modo mando</span>
   </button>
 
+  <!-- Live satellite fire detections (NASA GIBS · VIIRS 375 m, no key) -->
+  <button id="firesToggle" onclick="toggleFires()">
+    <span class="dot"></span><span data-i18n="firesLabel">Fuegos satélite</span>
+  </button>
+
   <!-- Result panel -->
   <div id="panel">
     <div class="panel-head">
@@ -440,6 +463,7 @@
         layerArrival:  'Llegada',
         legendArrival: 'Hora de llegada',
         safetyDist:    'Distancia de seguridad ≥ {m} m (4× llama, NWCG)',
+        firesLabel:    'Fuegos satélite (VIIRS, últimas pasadas)',
         cmdLabel:      'Modo mando',
         scenarioLabel: 'Escenario',
         scenarioReal:  'Actual',
@@ -529,6 +553,7 @@
         layerArrival:  'Arrival',
         legendArrival: 'Arrival time',
         safetyDist:    'Safety distance ≥ {m} m (4× flame, NWCG)',
+        firesLabel:    'Satellite fires (VIIRS, latest passes)',
         cmdLabel:      'Command mode',
         scenarioLabel: 'Scenario',
         scenarioReal:  'Actual',
@@ -709,6 +734,13 @@
     let lastExposure = null;  // last exposure result {places, crit}, re-rendered on language switch
     let lastPredictMs = null; // end-to-end latency of the last prediction (diagnostics)
 
+    // The packaged app serves embedded assets from the tauri origin — it has no /api/* of its own.
+    // The online engine (ELMFIRE) lives in the operator's local server (WSL, localhost:8000), whose
+    // CORS allowlist already trusts tauri.localhost. An absolute base makes "Online" real in the
+    // .exe; web/PWA origins keep same-origin relative calls (empty base).
+    const API_BASE = (location.hostname === 'tauri.localhost' || location.protocol === 'tauri:')
+      ? 'http://127.0.0.1:8000' : '';
+
     // ── Diagnostics (support/debug — 5 taps on the ÍGNEA logo) ────────────────
     // Field support in seconds, not hours: data sources + ages, cache state, timings and the last
     // runtime errors, readable on the device itself. No competitor exposes this to the operator.
@@ -819,7 +851,10 @@
     }
 
     function addImageLayer(id, ov, opacity) {
-      map.addSource(id, { type: 'image', url: ov.url, coordinates: ov.coordinates });
+      // Online overlays arrive as server-relative URLs (/overlays/x.png); in the packaged app the
+      // page origin is tauri.localhost, so they must be resolved against the local API server.
+      const url = ov.url.startsWith('/') ? API_BASE + ov.url : ov.url;
+      map.addSource(id, { type: 'image', url, coordinates: ov.coordinates });
       map.addLayer({ id, type: 'raster', source: id,
                      paint: { 'raster-opacity': opacity, 'raster-resampling': 'linear' } });
     }
@@ -834,6 +869,35 @@
       $('legend').classList.toggle('show', which === 'burn');
       $('sectorLegend').classList.toggle('show', which === 'sectors');
       $('arrivalLegend').classList.toggle('show', which === 'arrival');
+    }
+
+    // ── Live satellite fire detections (NASA GIBS · VIIRS 375 m thermal anomalies) ─────────────
+    // Real satellite hotspots (Suomi-NPP + NOAA-20, ~2 passes/day each, GIBS updates within ~3 h)
+    // rendered under the prediction overlays. WMS rasterisation via MapLibre's {bbox-epsg-3857}
+    // token — open access, no API key, CORS-clean. Honest framing: detections from the LAST passes
+    // (up to ~24 h old), not a live video feed; the panel label says so.
+    let firesOn = false;
+    const GIBS_FIRES_URL = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi'
+      + '?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0'
+      + '&LAYERS=VIIRS_NOAA20_Thermal_Anomalies_375m_All,VIIRS_SNPP_Thermal_Anomalies_375m_All'
+      + '&STYLES=&FORMAT=image/png&TRANSPARENT=true&CRS=EPSG:3857&WIDTH=256&HEIGHT=256'
+      + '&BBOX={bbox-epsg-3857}';   // TIME omitted → GIBS serves the latest available day
+    function _addFiresLayer() {
+      if (map.getSource('gibs-fires')) return;
+      map.addSource('gibs-fires', { type: 'raster', tiles: [GIBS_FIRES_URL], tileSize: 256,
+        attribution: 'Fire detections: NASA EOSDIS GIBS / VIIRS' });
+      // Under the prediction overlays so the forecast stays readable on top of the detections.
+      const before = map.getLayer('burn') ? 'burn' : undefined;
+      map.addLayer({ id: 'gibs-fires', type: 'raster', source: 'gibs-fires',
+                     paint: { 'raster-opacity': 0.9 } }, before);
+    }
+    function toggleFires() {
+      firesOn = !firesOn;
+      $('firesToggle').classList.toggle('on', firesOn);
+      whenMapReady(() => {
+        if (firesOn) _addFiresLayer();
+        else if (map.getLayer('gibs-fires')) { map.removeLayer('gibs-fires'); map.removeSource('gibs-fires'); }
+      });
     }
 
     // Run fn once the style can accept sources (addSource/addLayer). Adding a source needs the STYLE
@@ -887,7 +951,7 @@
     async function predictOnline(lat, lon) {
       let r;
       try {
-        r = await fetch('/api/predict', {
+        r = await fetch(API_BASE + '/api/predict', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ lat, lon, engine }),
         });
@@ -1150,7 +1214,7 @@
     function _connectLive() {
       if (posEvt) return;
       _setLiveStatus('connecting');
-      posEvt = new EventSource('/api/positions/stream');
+      posEvt = new EventSource(API_BASE + '/api/positions/stream');
       posEvt.onopen  = () => _setLiveStatus('connected');
       posEvt.onerror = () => { _setLiveStatus('lost'); posEvt = null; };
       posEvt.onmessage = e => {
@@ -1217,7 +1281,7 @@
         if (lastResult && (lastResult.engine || '').startsWith('offline')) {
           a = IgneaOffline.assess(lastResult, resources);   // in-webview, no server
         } else {
-          const r = await fetch('/api/assess', {
+          const r = await fetch(API_BASE + '/api/assess', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ run_id: runId, resources }),
           });
@@ -1275,7 +1339,7 @@
 
     async function _switchToOfflineBasemap() {
       let tiles = [];
-      try { tiles = await (await fetch('/api/tiles/list')).json(); } catch (_) {}
+      try { tiles = await (await fetch(API_BASE + '/api/tiles/list')).json(); } catch (_) {}
       const btn = $('tilesBtn');
       btn.classList.add('show');
       if (tiles.length > 0) {
@@ -1312,7 +1376,7 @@
       ];
       btn.textContent = t('tilesStarting'); btn.className = 'progress show';
       try {
-        const r = await fetch('/api/tiles/download', {
+        const r = await fetch(API_BASE + '/api/tiles/download', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: `region_${Date.now()}`, bbox, zoom_max: 14 }),
         });
@@ -1330,7 +1394,7 @@
       if (!tileJobId) return;
       const btn = $('tilesBtn');
       try {
-        const j = await (await fetch(`/api/tiles/status/${tileJobId}`)).json();
+        const j = await (await fetch(`${API_BASE}/api/tiles/status/${tileJobId}`)).json();
         if (j.status === 'done') {
           clearInterval(tileJobTimer); tileJobTimer = null; tileJobId = null;
           btn.textContent = `✓ ${j.name} ready`; btn.className = 'ready show';
@@ -1374,7 +1438,7 @@
     async function _checkHealth() {
       let serverUp = false;
       try {
-        const r = await fetch('/api/health');
+        const r = await fetch(API_BASE + '/api/health');
         // In a Tauri/PWA webview with no backend, /api/health answers 200 with the index.html shell,
         // so r.ok is not enough — require a real JSON health payload before believing the server is up.
         const h = r.ok ? await r.json() : null;   // throws on HTML → caught below → serverUp stays false
