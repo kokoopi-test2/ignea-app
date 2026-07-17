@@ -31,7 +31,12 @@
       --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+    html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--sans);
+                 -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    /* Mobile browsers auto-boost font size on narrow viewports (readability heuristic) unless told
+       not to — found live: it silently inflated the hint pill's rendered height beyond what the
+       CSS declares, undoing the pixel-accurate mobile spacing fix above in a way that only showed
+       up under a REAL mobile viewport/DPR, not a plain desktop window resize. */
     #map { position: absolute; inset: 0; }
     .maplibregl-ctrl-attrib { font-size: 10px; }
 
@@ -79,7 +84,7 @@
     .hint {
       position: absolute; top: 54px; left: 50%; transform: translateX(-50%); z-index: 5;
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
-      padding: 7px 16px; font-size: 12.5px; color: var(--ink-dim);
+      padding: 7px 16px; font-size: 12.5px; color: var(--ink-dim); white-space: nowrap;
       backdrop-filter: blur(8px); transition: opacity .4s;
     }
     .hint b { color: var(--ember-soft); font-weight: 600; }
@@ -195,9 +200,10 @@
     .tag.crit { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px;
                 border-radius: 999px; background: rgba(232,80,58,.18); color: #ff8a5a; margin-left: 4px; }
 
+    .firesLabelShort { display: none; }   /* shown only on narrow phones, see the media query below */
+
     /* ── Engine toggle (left-top) ─────────────────────────────────────────── */
     #engineToggle {
-      position: absolute; top: 54px; left: 16px; z-index: 6;
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 3px; backdrop-filter: blur(8px);
     }
@@ -207,10 +213,38 @@
     }
     #engineToggle span.on { background: var(--ember); color: #1a0f08; font-weight: 600; }
 
-    #scenarioToggle {
+    /* Top-left chip stack: scenario, command, satellite fires, offline-tiles. A shared flex column
+       instead of four independently absolute-positioned chips with hand-tuned top:Npx offsets — the
+       old scheme desynced the instant any one chip's rendered height differed from what the magic
+       numbers assumed (e.g. the hint pill above wrapping to 2 lines on a narrow phone invaded the
+       first chip's row; found live on a real device). The wrapper positions the whole stack; each
+       chip just flows inside it and reflows automatically when one is hidden or grows.
+     */
+    #topLeftStack {
       position: absolute; top: 92px; left: 16px; z-index: 6;
+      display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+      max-width: calc(100vw - 32px);
+    }
+    @media (max-width: 719px) {
+      /* Mobile redesign (found live: the vertical column plus the bottom panel ate almost the whole
+         screen, leaving a sliver of map). Three changes: (1) the chip stack flows as a wrapping ROW
+         instead of one-per-line — most phones fit 2, sometimes 3, chips per row, cutting the stack
+         from 3-4 rows down to 1-2; (2) the hint pill is forced single-line (see .hint's white-space:
+         nowrap) and shortened to just its bold lead-in, so its height is small and predictable
+         instead of depending on how many lines a long phrase wraps to on a given phone/font/DPR
+         (that uncertainty is what broke the earlier fixed-offset attempt: it measured fine on a
+         desktop-resized window but not under a real mobile viewport, where font metrics differed);
+         (3) the result panel no longer claims most of the screen by default. */
+      #topLeftStack { top: 124px; flex-direction: row; flex-wrap: wrap; max-width: calc(100vw - 32px); }
+      .firesLabelFull { display: none; }
+      .firesLabelShort { display: inline; }
+      .hintRestFull { display: none; }
+      #panel { max-height: 46vh; }
+    }
+    #scenarioToggle {
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 3px; backdrop-filter: blur(8px); display: flex; align-items: center; gap: 2px;
+      max-width: 100%; flex-wrap: wrap;
     }
     #scenarioToggle .stitle { font-size: 10px; color: var(--ink-dim); padding: 0 6px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
     #scenarioToggle span.sc {
@@ -221,9 +255,7 @@
 
     /* ── Command toggle ───────────────────────────────────────────────────── */
     #cmdToggle {
-      /* Second row below the scenario selector — they previously shared top≈92px/left:16px and the
-         command pill covered the scenario's "Actual" chip (and, expanded, "Viento fuerte" too). */
-      position: absolute; top: 140px; left: 16px; z-index: 6; cursor: pointer;
+      cursor: pointer;
       display: inline-flex; align-items: center; gap: 7px;
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 7px 13px; font-size: 12px; color: var(--ink-dim);
@@ -235,8 +267,7 @@
 
     /* ── Offline tiles button ─────────────────────────────────────────────── */
     #firesToggle {
-      /* Third row: scenario (92px) → command (140px) → satellite fires. */
-      position: absolute; top: 184px; left: 16px; z-index: 6; cursor: pointer;
+      cursor: pointer;
       display: inline-flex; align-items: center; gap: 7px;
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 7px 13px; font-size: 12px; color: var(--ink-dim);
@@ -246,8 +277,7 @@
     #firesToggle.on { color: var(--ink); border-color: var(--bad); }
     #firesToggle.on .dot { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
     #tilesBtn {
-      /* Fourth row, below the satellite-fires toggle. */
-      position: absolute; top: 228px; left: 16px; z-index: 6; cursor: pointer;
+      cursor: pointer;
       display: none; align-items: center; gap: 7px;
       background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px;
       padding: 6px 12px; font-size: 11.5px; color: var(--ink-dim);
@@ -318,7 +348,7 @@
 
   <!-- Ignition hint -->
   <div class="hint" id="hint">
-    <b data-i18n="hintBold">Toca el mapa</b> <span data-i18n="hintRest">para fijar un punto de ignición</span>
+    <b data-i18n="hintBold">Toca el mapa</b> <span class="hintRestFull" data-i18n="hintRest">para fijar un punto de ignición</span>
   </div>
 
   <!-- Loading spinner -->
@@ -365,32 +395,35 @@
     <span data-layer="arrival" id="arrivalChip" data-i18n="layerArrival" onclick="showLayer('arrival')">Llegada</span>
   </div>
 
-  <!-- Engine toggle (online / offline) -->
-  <div id="engineToggle">
-    <span data-engine="online"  class="on" onclick="setEngine('online')">Online</span>
-    <span data-engine="offline"            onclick="setEngine('offline')">Offline</span>
+  <!-- Top-left chip stack: one flex column, no more hand-tuned top:Npx per chip (see CSS). -->
+  <div id="topLeftStack">
+    <!-- Engine toggle (online / offline) -->
+    <div id="engineToggle">
+      <span data-engine="online"  class="on" onclick="setEngine('online')">Online</span>
+      <span data-engine="offline"            onclick="setEngine('offline')">Offline</span>
+    </div>
+
+    <!-- Scenario toggle — a pre-deployment "what-if": explore adverse conditions, not just now -->
+    <div id="scenarioToggle" role="group" aria-label="Scenario">
+      <span class="stitle" data-i18n="scenarioLabel">Escenario</span>
+      <span class="sc on" data-scenario="real"     onclick="setScenario('real')"    data-i18n="scenarioReal">Actual</span>
+      <span class="sc"    data-scenario="strong"   onclick="setScenario('strong')"  data-i18n="scenarioStrong">Viento fuerte</span>
+      <span class="sc"    data-scenario="extreme"  onclick="setScenario('extreme')" data-i18n="scenarioExtreme">Extremo</span>
+    </div>
+
+    <!-- Command-mode toggle -->
+    <button id="cmdToggle" style="display:none" onclick="toggleCommand()">
+      <span class="dot"></span><span id="cmdLabel" data-i18n="cmdLabel">Modo mando</span>
+    </button>
+
+    <!-- Live satellite fire detections (NASA GIBS · VIIRS 375 m, no key) -->
+    <button id="firesToggle" onclick="toggleFires()">
+      <span class="dot"></span><span class="firesLabelFull" data-i18n="firesLabel">Fuegos satélite (VIIRS, últimas pasadas)</span><span class="firesLabelShort" data-i18n="firesLabelShort">Satélite</span>
+    </button>
+
+    <!-- Offline map tile download button -->
+    <button id="tilesBtn" onclick="handleTilesBtn()"></button>
   </div>
-
-  <!-- Scenario toggle — a pre-deployment "what-if": explore adverse conditions, not just now -->
-  <div id="scenarioToggle" role="group" aria-label="Scenario">
-    <span class="stitle" data-i18n="scenarioLabel">Escenario</span>
-    <span class="sc on" data-scenario="real"     onclick="setScenario('real')"    data-i18n="scenarioReal">Actual</span>
-    <span class="sc"    data-scenario="strong"   onclick="setScenario('strong')"  data-i18n="scenarioStrong">Viento fuerte</span>
-    <span class="sc"    data-scenario="extreme"  onclick="setScenario('extreme')" data-i18n="scenarioExtreme">Extremo</span>
-  </div>
-
-  <!-- Offline map tile download button -->
-  <button id="tilesBtn" onclick="handleTilesBtn()"></button>
-
-  <!-- Command-mode toggle -->
-  <button id="cmdToggle" style="display:none" onclick="toggleCommand()">
-    <span class="dot"></span><span id="cmdLabel" data-i18n="cmdLabel">Modo mando</span>
-  </button>
-
-  <!-- Live satellite fire detections (NASA GIBS · VIIRS 375 m, no key) -->
-  <button id="firesToggle" onclick="toggleFires()">
-    <span class="dot"></span><span data-i18n="firesLabel">Fuegos satélite (VIIRS, últimas pasadas)</span>
-  </button>
 
   <!-- Result panel -->
   <div id="panel">
@@ -484,6 +517,7 @@
         legendArrival: 'Hora de llegada',
         safetyDist:    'Distancia de seguridad ≥ {m} m (4× llama, NWCG)',
         firesLabel:    'Fuegos satélite (VIIRS, últimas pasadas)',
+        firesLabelShort: 'Satélite',
         crownWarn:     'Coronamiento posible en el {p}% de las simulaciones (1er orden Van Wagner) — fuego de copas: intensidad y alcance muy superiores.',
         cmdLabel:      'Modo mando',
         scenarioLabel: 'Escenario',
@@ -577,6 +611,7 @@
         legendArrival: 'Arrival time',
         safetyDist:    'Safety distance ≥ {m} m (4× flame, NWCG)',
         firesLabel:    'Satellite fires (VIIRS, latest passes)',
+        firesLabelShort: 'Satellite',
         crownWarn:     'Crowning possible in {p}% of simulations (first-order Van Wagner) — crown fire: far higher intensity and reach.',
         cmdLabel:      'Command mode',
         scenarioLabel: 'Scenario',
@@ -709,8 +744,15 @@
           maxzoom: 17,
           attribution: 'Tiles © Esri — Esri, HERE, Garmin, USGS · © OpenStreetMap contributors',
         } },
-        layers: [{ id: 'base', type: 'raster', source: 'base',
-                   paint: { 'raster-saturation': -0.15 } }]
+        layers: [
+          // A background layer under the raster tiles is NOT decorative here: it's what a mobile
+          // user sees the instant tiles are slow or fail outright on a real cellular/Wi-Fi network
+          // (the offline PMTiles style already had one; this one didn't — real "black map" cause,
+          // distinct from the whenMapReady style-timing fix). A muted terrain tone reads as
+          // "loading the map" instead of "broken app".
+          { id: 'bg', type: 'background', paint: { 'background-color': '#2b2e26' } },
+          { id: 'base', type: 'raster', source: 'base', paint: { 'raster-saturation': -0.15 } },
+        ]
       };
     }
 
@@ -762,7 +804,20 @@
     map.on('load', () => {
       if (!navigator.geolocation) return;
       navigator.geolocation.getCurrentPosition(
-        (pos) => map.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: 12, duration: 1200 }),
+        (pos) => {
+          // The browser reports its own confidence in `accuracy` (metres, 1-sigma radius). A real
+          // GPS chip (phone) typically returns <50 m; Wi-Fi positioning (laptop) a few hundred to a
+          // few km; IP-only fallback (desktop with no Wi-Fi/GPS, or location services degraded) can
+          // be tens of km off — sometimes a whole city away from the real device. Auto-flying there
+          // with full confidence would show a wrong "you are here" as if it were precise. So: trust
+          // it and zoom in tight only when the fix is actually precise; zoom out for a coarser fix;
+          // and for a genuinely unreliable one, leave the default view rather than confidently
+          // centring on the wrong city (the manual recentre button still lets the user retry).
+          const acc = pos.coords.accuracy;
+          if (acc > 50000) return;   // too coarse to act on with any confidence
+          const zoom = acc <= 200 ? 13 : acc <= 5000 ? 11 : 8;
+          map.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom, duration: 1200 });
+        },
         () => { /* denied/unavailable — keep the default centre, no error shown */ },
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
       );
