@@ -23,6 +23,7 @@
   // per-cell land-cover crosswalk (buildFbfm) can select any climate-appropriate model.
   const FUEL_ROWS = [
     [  1, "FBFM01", false,   0.034,       0,       0,       0,       0, 3500, 9999, 9999,    1, 12, 8000],
+    [ 10, "FBFM10", false,   0.138,   0.092,    0.23,       0,   0.092, 2000, 9999, 1500,    1, 25, 8000],
     [101, "GR1   ", true , 0.00459,       0,       0, 0.01377,       0, 2200, 2000, 9999,  0.4, 15, 8000],
     [102, "GR2   ", true , 0.00459,       0,       0, 0.04591,       0, 2000, 1800, 9999,    1, 15, 8000],
     [103, "GR3   ", true , 0.00459, 0.01837,       0, 0.06887,       0, 1500, 1300, 9999,    2, 30, 8000],
@@ -254,6 +255,22 @@
   }
   const LIVE_HERB_M = 0.70, LIVE_WOODY_M = 0.90;
 
+  // ── First-order crown fire — mirror of engine/offline/spread.py (dual-source) ────────────────
+  // Canopied (timber) codes; Van Wagner (1977) crowning threshold with stated defaults (canopy
+  // base 3 m, foliar moisture 100 %); Rothermel (1991) crown ROS = 3.34 × R(FM10) at midflame.
+  const TIMBER_CODES = new Set([161, 162, 163, 164, 165, 181, 182, 183, 184, 185, 186, 187, 188, 189]);
+  const CROWN_CBH_M = 3.0, CROWN_FMC_PCT = 100.0;
+  const CROWN_I0_KWM = Math.pow(0.010 * CROWN_CBH_M * (460.0 + 25.9 * CROWN_FMC_PCT), 1.5);
+  const CROWN_ROS_FACTOR = 3.34;
+
+  function crownRosMMin(fuelModels, moist, wind20Ms, slopeFrac) {
+    const fm10 = fuelModels[10];
+    if (!fm10) return 0.0;
+    const windMid = wind20Ms * midflameWaf(fm10.depth_ft);
+    const res = spreadRate(fm10, moist, windMid, slopeFrac);
+    return CROWN_ROS_FACTOR * res.ros_m_min;
+  }
+
   // ── Ellipse + directional spread — port of engine/offline/spread.py ──────────────────────────
   const NEIGHBORS = [
     [-1, 0, 1.0], [1, 0, 1.0], [0, -1, 1.0], [0, 1, 1.0],
@@ -270,11 +287,17 @@
     return Math.min(Math.max(1.83 / Math.log((20.0 + 0.36 * depthFt) / (0.13 * depthFt)), 0.1), 1.0);
   }
 
-  // Head ROS (m/min), heading bearing (deg), eccentricity for one cell.
-  function cellHead(fm, slopeFrac, aspectDeg, wind20ftMs, windToBearing, moist) {
+  // Head ROS (m/min), heading bearing (deg), eccentricity, crowned flag for one cell.
+  function cellHead(fm, slopeFrac, aspectDeg, wind20ftMs, windToBearing, moist, fuelModels) {
     const windMs = wind20ftMs * midflameWaf(fm.depth_ft);
     const res = spreadRate(fm, moist, windMs, slopeFrac);
-    if (res.ros_m_min <= 0) return [0.0, 0.0, 0.0];
+    if (res.ros_m_min <= 0) return [0.0, 0.0, 0.0, false];
+    let ros = res.ros_m_min;
+    let crowned = false;
+    if (fuelModels && TIMBER_CODES.has(fm.number) && (res.fireline_intensity_kwm || 0) >= CROWN_I0_KWM) {
+      ros = Math.max(ros, crownRosMMin(fuelModels, moist, wind20ftMs, slopeFrac));
+      crowned = true;
+    }
     const upslope = (aspectDeg + 180.0) % 360.0;
     const wx = res.phi_w * Math.sin(rad(windToBearing));
     const wy = res.phi_w * Math.cos(rad(windToBearing));
@@ -285,7 +308,7 @@
     else heading = (deg(Math.atan2(wx + sx, wy + sy)) + 360.0) % 360.0;
     const lw = lengthWidthRatio(res.eff_wind_ms);
     const ecc = lw > 1.0 ? Math.sqrt(lw * lw - 1.0) / lw : 0.0;
-    return [res.ros_m_min, heading, ecc];
+    return [ros, heading, ecc, crowned];
   }
 
   const rad = (d) => (d * Math.PI) / 180.0;
@@ -307,8 +330,9 @@
   };
   Heap.prototype.size = function () { return this.a.length; };
 
-  // Returns Float64Array arrival (seconds; Infinity where unreached).
-  function computeArrival(fbfm, slopeDeg, aspectDeg, fuelModels, ignRC, cellM, windMs, windDirDeg, moisture, tstopS, rosMult) {
+  // Returns Float64Array arrival (seconds; Infinity where unreached). crownOut, when given,
+  // receives {cells: N} — crowned cells the fire actually reached (mirrors compute_arrival).
+  function computeArrival(fbfm, slopeDeg, aspectDeg, fuelModels, ignRC, cellM, windMs, windDirDeg, moisture, tstopS, rosMult, crownOut) {
     rosMult = rosMult == null ? 1.0 : rosMult;
     const rows = fbfm.length, cols = fbfm[0].length;
     const windTo = (windDirDeg + 180.0) % 360.0;
@@ -316,6 +340,7 @@
     const ros = new Float64Array(rows * cols);
     const head = new Float64Array(rows * cols);
     const ecc = new Float64Array(rows * cols);
+    const crowned = new Uint8Array(rows * cols);
     const cache = new Map();
     for (let r = 0; r < rows; r++) {
       for (let cc = 0; cc < cols; cc++) {
@@ -325,11 +350,12 @@
         const slopeFrac = Math.tan(rad(slopeDeg[r][cc]));
         const key = code + "|" + slopeFrac.toFixed(3) + "|" + (Math.floor(aspectDeg[r][cc] / 5));
         let v = cache.get(key);
-        if (!v) { v = cellHead(fm, slopeFrac, aspectDeg[r][cc], windMs, windTo, moisture); cache.set(key, v); }
+        if (!v) { v = cellHead(fm, slopeFrac, aspectDeg[r][cc], windMs, windTo, moisture, fuelModels); cache.set(key, v); }
         const idx = r * cols + cc;
         ros[idx] = (v[0] * rosMult) / 60.0; // m/min -> m/s
         head[idx] = v[1];
         ecc[idx] = v[2];
+        crowned[idx] = v[3] ? 1 : 0;
       }
     }
 
@@ -357,6 +383,11 @@
         const nt = t + (distCells * cellM) / dirRate;
         if (nt < arrival[ni] && nt <= tstopS) { arrival[ni] = nt; pq.push([nt, nr, nc]); }
       }
+    }
+    if (crownOut) {
+      let n = 0;
+      for (let i = 0; i < arrival.length; i++) if (crowned[i] && isFinite(arrival[i])) n++;
+      crownOut.cells = n;
     }
     return arrival;
   }
@@ -737,13 +768,21 @@
     for (let k = 0; k < o.rle.length; k += 2) { const val = o.rle[k], run = o.rle[k + 1]; for (let j = 0; j < run; j++) grid[i++] = val; }
     return { grid, W: o.W, H: o.H, xmin: o.xmin, ymax: o.ymax, res: o.res };
   }
-  // POST-body fetch with timeout (Overpass) — returns parsed JSON or null.
+  // POST-body fetch with timeout (Overpass) — returns parsed JSON or null. All Overpass traffic
+  // (this OSM fuel prefetch AND the UI's exposure query) is SERIALISED through one shared gate:
+  // the public API allows ~2 concurrent slots per IP, so our own parallel requests queued each
+  // other server-side until the client aborted (self-inflicted timeout, found live 2026-07-17).
   async function fetchWithTimeout2(url, body, ms) {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), ms);
-    try { const r = await fetch(url, { method: "POST", body: body, signal: ctrl.signal }); return r.ok ? await r.json() : null; }
-    catch (_) { return null; }
-    finally { clearTimeout(to); }
+    const run = async () => {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), ms);
+      try { const r = await fetch(url, { method: "POST", body: body, signal: ctrl.signal }); return r.ok ? await r.json() : null; }
+      catch (_) { return null; }
+      finally { clearTimeout(to); }
+    };
+    const next = (window._ovpGate || Promise.resolve()).catch(() => null).then(run);
+    window._ovpGate = next;
+    return next;
   }
 
   // Tier 2 — the bundled global WorldCover baseline (ui/data/worldcover_biome.png). Works fully
@@ -1098,13 +1137,16 @@
       const memberArrivals = [], memberSizes = [];
       const sumArrival = new Float64Array(rows * cols), burnedCount = new Int32Array(rows * cols);
       const cellHa = (cellM * cellM) / 10000.0;
+      let crownMembers = 0;   // members in which the fire actually reached crowned (torching) cells
       for (let mi = 0; mi < members; mi++) {
         const wind = Math.max(weather.windMs + uni(-1.3, 1.3), 0.0);
         const wdir = ((weather.windDirDeg + uni(-25.0, 25.0)) % 360.0 + 360.0) % 360.0;
         const moist = Object.assign({}, baseMoist);
         moist.m_1h = Math.max(moist.m_1h + uni(-0.02, 0.02), 0.005);
         const rosMult = 1.0 + uni(-adj, adj);
-        const arrival = computeArrival(fbfm, terrain.slope, terrain.aspect, FUEL_MODELS, [r0, c0], cellM, wind, wdir, moist, tstopS, rosMult);
+        const crownOut = { cells: 0 };
+        const arrival = computeArrival(fbfm, terrain.slope, terrain.aspect, FUEL_MODELS, [r0, c0], cellM, wind, wdir, moist, tstopS, rosMult, crownOut);
+        if (crownOut.cells > 0) crownMembers++;
         let burned = 0;
         for (let i = 0; i < arrival.length; i++) {
           const t = arrival[i];
@@ -1116,7 +1158,7 @@
       for (let i = 0; i < prob.length; i++) { prob[i] = counts[i] / members; if (prob[i] > maxP) maxP = prob[i]; }
       const p50cell = new Float64Array(rows * cols);
       for (let i = 0; i < p50cell.length; i++) { p50cell[i] = burnedCount[i] ? sumArrival[i] / burnedCount[i] : Infinity; }
-      return { prob, p50cell, maxP, memberArrivals, memberSizes };
+      return { prob, p50cell, maxP, memberArrivals, memberSizes, crownProb: crownMembers / members };
     }
     const touchesEdge = (prob) => {
       for (let c = 0; c < cols; c++) if (prob[c] > 0 || prob[(rows - 1) * cols + c] > 0) return true;
@@ -1232,7 +1274,10 @@
       fireline_intensity_kwm: firelineKwm,
       confidence: overallConf,
       fuel: { source: fuelSource, system: "scott_burgan", confidence: fuelConf, code: FUEL_MODELS[headCode].code, resolution_m: fuelResolutionM, mix: fuelMix },
-      sectors: { head_bearing_deg: sect.head_bearing_deg, dominant: sect.dominant || null, crown_capable: false, sectors: sect.sectors },
+      // First-order crown fire (Van Wagner initiation + Rothermel-1991 crown ROS, default canopy
+      // parameters): the share of ensemble members whose fire reached torching timber cells.
+      crown: { probability: round(run.crownProb, 2), model: "van-wagner-1977/rothermel-1991", defaults: { cbh_m: CROWN_CBH_M, fmc_pct: CROWN_FMC_PCT } },
+      sectors: { head_bearing_deg: sect.head_bearing_deg, dominant: sect.dominant || null, crown_capable: run.crownProb > 0, sectors: sect.sectors },
       overlay: overlay,
       sector_overlay: sectorOverlay,
       arrival_overlay: arrivalOverlay,

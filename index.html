@@ -370,7 +370,7 @@
 
   <!-- Live satellite fire detections (NASA GIBS · VIIRS 375 m, no key) -->
   <button id="firesToggle" onclick="toggleFires()">
-    <span class="dot"></span><span data-i18n="firesLabel">Fuegos satélite</span>
+    <span class="dot"></span><span data-i18n="firesLabel">Fuegos satélite (VIIRS, últimas pasadas)</span>
   </button>
 
   <!-- Result panel -->
@@ -382,6 +382,7 @@
     </div>
     <div class="coords" id="coords">—</div>
     <div id="noSpread" class="nospread" style="display:none"></div>
+    <div id="crownWarn" class="nospread" style="display:none; color:var(--bad); border-color:var(--bad)"></div>
 
     <div class="row">
       <div class="stat"><div class="k" data-i18n="statMaxP">P(quema) máx.</div><div class="v" id="maxp">—</div></div>
@@ -464,6 +465,7 @@
         legendArrival: 'Hora de llegada',
         safetyDist:    'Distancia de seguridad ≥ {m} m (4× llama, NWCG)',
         firesLabel:    'Fuegos satélite (VIIRS, últimas pasadas)',
+        crownWarn:     'Coronamiento posible en el {p}% de las simulaciones (1er orden Van Wagner) — fuego de copas: intensidad y alcance muy superiores.',
         cmdLabel:      'Modo mando',
         scenarioLabel: 'Escenario',
         scenarioReal:  'Actual',
@@ -493,6 +495,7 @@
         exposureEyebrow: 'Exposición en la trayectoria',
         exposureLoading: 'analizando exposición…',
         exposurePlaces:  'núcleos en la huella',
+        exposureBuildings: 'edificios en la trayectoria (OSM)',
         exposureCritical: 'puntos críticos',
         exposureNone:    'sin elementos mapeados dentro de la huella (zona despoblada).',
         sectorHead:    'Cabeza',
@@ -554,6 +557,7 @@
         legendArrival: 'Arrival time',
         safetyDist:    'Safety distance ≥ {m} m (4× flame, NWCG)',
         firesLabel:    'Satellite fires (VIIRS, latest passes)',
+        crownWarn:     'Crowning possible in {p}% of simulations (first-order Van Wagner) — crown fire: far higher intensity and reach.',
         cmdLabel:      'Command mode',
         scenarioLabel: 'Scenario',
         scenarioReal:  'Actual',
@@ -583,6 +587,7 @@
         exposureEyebrow: "In the fire's path",
         exposureLoading: 'assessing exposure…',
         exposurePlaces:  'places in the footprint',
+        exposureBuildings: 'buildings in the fire\'s path (OSM)',
         exposureCritical: 'critical sites',
         exposureNone:    'no mapped assets inside the footprint (unpopulated area).',
         sectorHead:    'Head',
@@ -1050,21 +1055,30 @@
       // fire's path" is the operational alert; heavy building/road counts are deferred (Phase 6c+).
       const q = '[out:json][timeout:15];'
         + `(node["place"~"^(city|town|village|hamlet|suburb)$"](${bbox});`
-        + `nwr["amenity"~"^(hospital|school|kindergarten|fire_station|police)$"](${bbox}););out tags center 400;`;
+        + `nwr["amenity"~"^(hospital|school|kindergarten|fire_station|police)$"](${bbox});`
+        + `way["building"](${bbox}););out tags center 800;`;
       body.innerHTML = `<div class="xstat xnames">${t('exposureLoading')}</div>`;
       block.style.display = 'block';
       // POST the raw query as the body (the `data=` form is much slower / gets rejected). overpass-api.de
       // answers a sparse query in well under 1 s; kumi.systems is the fallback.
+      // Serialised through the same Overpass gate the engine's OSM prefetch uses (the public API
+      // allows ~2 concurrent slots per IP; racing our own prefetch made this query time out).
       const endpoints = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
-      let data = null;
-      for (const ep of endpoints) {
-        try {
-          const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 12000);
-          const r = await fetch(ep, { method: 'POST', body: q, signal: ctrl.signal });
-          clearTimeout(to);
-          if (r.ok) { data = await r.json(); break; }
-        } catch (_) { /* try next endpoint */ }
-      }
+      const attempt = async () => {
+        if (lastResult !== d) return null;   // superseded while queued — don't burn an Overpass slot
+        for (const ep of endpoints) {
+          try {
+            const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 20000);
+            const r = await fetch(ep, { method: 'POST', body: q, signal: ctrl.signal });
+            clearTimeout(to);
+            if (r.ok) return await r.json();
+          } catch (_) { /* try next endpoint */ }
+        }
+        return null;
+      };
+      const gated = (window._ovpGate || Promise.resolve()).catch(() => null).then(attempt);
+      window._ovpGate = gated;
+      const data = await gated;
       if (lastResult !== d) return;                       // a newer prediction superseded this
       if (!data) { block.style.display = 'none'; return; } // Overpass unavailable → silently skip
       const finite = (lat, lon) => {
@@ -1073,15 +1087,19 @@
         return (row >= 0 && row < g.rows && col >= 0 && col < g.cols) && isFinite(g.arrival[row * g.cols + col]);
       };
       const places = new Set(), crit = new Set();
-      for (const el of data.elements || []) {
+      let buildings = 0;
+      const els = data.elements || [];
+      for (const el of els) {
         const tg = el.tags || {};
         const la = el.lat != null ? el.lat : (el.center && el.center.lat);
         const lo = el.lon != null ? el.lon : (el.center && el.center.lon);
         if (la == null || !finite(la, lo)) continue;
         if (tg.place && tg.name) places.add(tg.name);
         else if (tg.amenity && tg.name) crit.add(tg.name);
+        else if (tg.building) buildings++;   // structures whose centre lies in the predicted path
       }
-      lastExposure = { places: [...places], crit: [...crit] };   // data kept apart from language
+      // 800 is the Overpass element cap: when hit, the building count is a floor, not a total.
+      lastExposure = { places: [...places], crit: [...crit], buildings, capped: els.length >= 800 };
       renderExposure();
     }
 
@@ -1090,9 +1108,10 @@
     function renderExposure() {
       if (!lastExposure) return;
       const rows = [];
-      const { places, crit } = lastExposure;
+      const { places, crit, buildings, capped } = lastExposure;
       if (places.length) rows.push(`<div class="xstat"><span class="xn">${places.length}</span><span>${t('exposurePlaces')}: <span class="xnames">${places.slice(0, 8).map(escapeHtml).join(', ')}</span></span></div>`);
       if (crit.length) rows.push(`<div class="xstat crit"><span class="xn">${crit.length}</span><span>${t('exposureCritical')}: <span class="xnames">${crit.slice(0, 6).map(escapeHtml).join(', ')}</span></span></div>`);
+      if (buildings > 0) rows.push(`<div class="xstat"><span class="xn">${capped ? '≥' : ''}${buildings}</span><span>${t('exposureBuildings')}</span></div>`);
       $('exposureBody').innerHTML = rows.length ? rows.join('') : `<div class="xstat xnames">${t('exposureNone')}</div>`;
     }
 
@@ -1124,6 +1143,11 @@
       if (d.flame_length_m > 0 && d.sectors && d.sectors.sectors && d.sectors.sectors.length) {
         $('headBearing').textContent += ` · ${t('flameLabel')} ~${d.flame_length_m} m`;
       }
+      // First-order crown-fire warning: share of ensemble members whose fire reached torching
+      // timber (Van Wagner initiation). Probabilistic and labelled first-order — never a certainty.
+      const cp = d.crown && d.crown.probability;
+      $('crownWarn').style.display = cp > 0 ? 'block' : 'none';
+      if (cp > 0) $('crownWarn').textContent = '⚠ ' + t('crownWarn').replace('{p}', Math.round(cp * 100));
       // No spread (moist fuel / calm wind) or open water are honest results, not empty panels: explain.
       const notice = d.notice === 'water' ? t('noticeWater')
                    : !(d.max_burn_probability > 0) ? (isScenario ? t('noSpreadScenario') : t('noSpread')) : '';
