@@ -154,7 +154,7 @@
     }
     .legend.show { opacity: 1; }
     .legend .grad { height: 8px; width: 150px; border-radius: 4px; margin: 6px 0 4px;
-                    background: linear-gradient(90deg, #fff5a0, #ffd64a, #ff8d29, #e83f1a, #980c0c); }
+                    background: linear-gradient(90deg, #ffe978, #ffcb38, #ff8d29, #e83f1a, #980c0c); }
     .legend .ends { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; }
     #sectorLegend .slegend { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
     #sectorLegend .slegend span { display: inline-flex; align-items: center; gap: 4px; }
@@ -867,7 +867,7 @@
     let activeLayer = 'burn';
     function showLayer(which) {
       activeLayer = which;
-      if (map.getLayer('burn'))    map.setPaintProperty('burn',    'raster-opacity', which === 'burn'    ? 0.82 : 0);
+      if (map.getLayer('burn'))    map.setPaintProperty('burn',    'raster-opacity', which === 'burn'    ? 0.88 : 0);
       if (map.getLayer('sectors')) map.setPaintProperty('sectors', 'raster-opacity', which === 'sectors' ? 0.80 : 0);
       if (map.getLayer('arrival')) map.setPaintProperty('arrival', 'raster-opacity', which === 'arrival' ? 0.85 : 0);
       document.querySelectorAll('#layerToggle span').forEach(s => s.classList.toggle('on', s.dataset.layer === which));
@@ -936,7 +936,7 @@
       whenMapReady(() => {
         clearOverlay();
         const ov = d.overlay, sov = d.sector_overlay, aov = d.arrival_overlay;
-        if (ov)  addImageLayer('burn',    ov,  0.82);
+        if (ov)  addImageLayer('burn',    ov,  0.88);
         if (sov) addImageLayer('sectors', sov, 0);
         if (aov) addImageLayer('arrival', aov, 0);
         $('arrivalChip').style.display = aov ? '' : 'none';   // only when a likely footprint exists

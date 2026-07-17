@@ -889,7 +889,7 @@
 
   // ── Overlay rendering: grid -> canvas data URL ───────────────────────────────────────────────
   const BURN_STOPS = [ // probability -> rgba, matches the UI legend gradient
-    [0.0, [255, 245, 160]], [0.25, [255, 214, 74]], [0.5, [255, 141, 41]],
+    [0.0, [255, 233, 120]], [0.25, [255, 203, 56]], [0.5, [255, 141, 41]],
     [0.75, [232, 63, 26]], [1.0, [152, 12, 12]],
   ];
   function burnColor(p) {
@@ -1227,9 +1227,10 @@
       if (pc < 0.015) return [0, 0, 0, 0];
       const rgb = burnColor(pc);
       // Alpha floor: on the light Esri topo basemap a pale-yellow low-probability fringe with
-      // alpha∝p was nearly invisible (a maxP≈0.3 fire didn't read at all). Keep the feathered
-      // edge but never drop a burnable pixel below ~30% opacity — legibility, not confidence.
-      return [rgb[0], rgb[1], rgb[2], Math.round(255 * (0.30 + 0.70 * Math.pow(pc, 0.75)))];
+      // alpha∝p was nearly invisible (a maxP≈0.3 fire didn't read at all — confirmed twice by the
+      // operator). Keep the feathered edge but never drop a burnable pixel below ~40% opacity —
+      // legibility, not confidence: the legend still maps colour to probability.
+      return [rgb[0], rgb[1], rgb[2], Math.round(255 * (0.40 + 0.60 * Math.pow(pc, 0.75)))];
     });
     const headBrg = sect.head_bearing_deg != null ? sect.head_bearing_deg : (weather.windDirDeg + 180) % 360;
     const sectorUrl = smoothSectorToDataUrl(rows, cols, probSmooth, r0, c0, headBrg);
